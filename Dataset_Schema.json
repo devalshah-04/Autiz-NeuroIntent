@@ -1,0 +1,588 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/autiz/neurointent/schemas/gap_dataset_v1.json",
+  "title": "ASD Intent Gap Dataset — Record Schema v1.0",
+  "description": "Schema for the novel ASD speaker intent vs. neurotypical evaluator interpretation gap dataset. Each record captures one utterance from an ASD speaker, their self-labeled intent, independent evaluator interpretations, and the computed gap. This gap is the primary training signal for the NeuroIntent decoupling module.",
+  "type": "object",
+
+  "required": [
+    "record_id",
+    "schema_version",
+    "speaker",
+    "audio",
+    "utterance",
+    "speaker_annotation",
+    "evaluator_annotations",
+    "gap",
+    "metadata"
+  ],
+
+  "properties": {
+
+    "record_id": {
+      "type": "string",
+      "description": "Globally unique identifier for this gap record. Format: gap_{session_id}_{utterance_index}",
+      "pattern": "^gap_[a-z0-9]+_[0-9]{3}$",
+      "examples": ["gap_sess047_003"]
+    },
+
+    "schema_version": {
+      "type": "string",
+      "description": "Schema version. Increment minor on backward-compatible field additions. Increment major on breaking changes.",
+      "enum": ["1.0"],
+      "default": "1.0"
+    },
+
+    "speaker": {
+      "type": "object",
+      "description": "Anonymized speaker metadata. No PII stored.",
+      "required": ["speaker_id", "consent_version", "consent_timestamp"],
+      "properties": {
+        "speaker_id": {
+          "type": "string",
+          "description": "Anonymized speaker identifier. Consistent across all sessions from the same speaker.",
+          "pattern": "^spk_[a-f0-9]{8}$",
+          "examples": ["spk_3a9f1b2c"]
+        },
+        "session_id": {
+          "type": "string",
+          "description": "Session identifier. One session = one speaker answering a fixed set of interview questions.",
+          "examples": ["sess047"]
+        },
+        "session_index": {
+          "type": "integer",
+          "description": "Which session number this is for this speaker (1-indexed). Used for longitudinal profiling.",
+          "minimum": 1
+        },
+        "consent_version": {
+          "type": "string",
+          "description": "Version of the consent form the speaker agreed to.",
+          "examples": ["consent_v1.2"]
+        },
+        "consent_timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp of consent. Audio must not be stored before this timestamp."
+        },
+        "self_reported_asd_diagnosis": {
+          "type": "boolean",
+          "description": "Speaker self-reports ASD diagnosis. Not clinically verified — self-report only.",
+          "default": true
+        },
+        "age_group": {
+          "type": "string",
+          "description": "Approximate age group. Binned for anonymization.",
+          "enum": ["18-25", "26-35", "36-45", "46+", "prefer_not_to_say"]
+        },
+        "communication_aids": {
+          "type": "array",
+          "description": "Any communication aids the speaker uses (for context, not exclusion).",
+          "items": {
+            "type": "string",
+            "enum": ["none", "text_to_speech", "AAC_device", "scripted_responses", "other"]
+          },
+          "default": ["none"]
+        }
+      }
+    },
+
+    "audio": {
+      "type": "object",
+      "description": "Audio file reference and technical properties. File stored separately from this JSON.",
+      "required": ["file_path", "sample_rate", "channels", "duration_sec", "format"],
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Relative path to the WAV file from the dataset root. Anonymized filename.",
+          "examples": ["audio/spk_3a9f1b2c/sess047_q003.wav"]
+        },
+        "sample_rate": {
+          "type": "integer",
+          "description": "Audio sample rate in Hz. Must be 16000. Files not meeting this requirement must be resampled before schema record creation.",
+          "const": 16000
+        },
+        "channels": {
+          "type": "integer",
+          "description": "Number of audio channels. Must be 1 (mono). Stereo files must be mixed down before schema record creation.",
+          "const": 1
+        },
+        "duration_sec": {
+          "type": "number",
+          "description": "Duration of the utterance in seconds.",
+          "minimum": 2.0,
+          "maximum": 60.0
+        },
+        "format": {
+          "type": "string",
+          "const": "wav",
+          "description": "Audio file format. Always WAV (PCM 16-bit)."
+        },
+        "recording_context": {
+          "type": "string",
+          "description": "How the audio was captured.",
+          "enum": ["browser_microphone", "phone_upload", "file_upload", "clinical_recording", "field_recording"]
+        },
+        "snr_db": {
+          "type": ["number", "null"],
+          "description": "Estimated signal-to-noise ratio in dB. Null if not computed.",
+          "default": null
+        }
+      }
+    },
+
+    "utterance": {
+      "type": "object",
+      "description": "The utterance content — transcript, timestamps, and the interview question it responds to.",
+      "required": ["question_id", "question_text", "transcript", "transcript_source"],
+      "properties": {
+        "question_id": {
+          "type": "string",
+          "description": "Which interview question prompt this utterance responds to.",
+          "examples": ["q_tell_me_about_project", "q_explain_technical_concept", "q_describe_challenge"]
+        },
+        "question_text": {
+          "type": "string",
+          "description": "The exact interview question the speaker was responding to.",
+          "examples": ["Tell me about a project you are particularly proud of."]
+        },
+        "transcript": {
+          "type": "string",
+          "description": "Full text transcript of the utterance. Lowercased, cleaned, apostrophes preserved.",
+          "examples": ["the algorithm works by sorting the input array first then running a binary search on each partition"]
+        },
+        "transcript_source": {
+          "type": "string",
+          "description": "How the transcript was generated. Human-verified transcripts are preferred.",
+          "enum": ["whisper_auto", "whisper_auto_human_verified", "human_transcribed"]
+        },
+        "word_timestamps": {
+          "type": ["array", "null"],
+          "description": "Word-level timestamps from Whisper. Required for temporal alignment. Null if not yet generated.",
+          "items": {
+            "type": "object",
+            "required": ["word", "start", "end"],
+            "properties": {
+              "word": { "type": "string" },
+              "start": { "type": "number", "description": "Start time in seconds" },
+              "end": { "type": "number", "description": "End time in seconds" }
+            }
+          },
+          "default": null
+        },
+        "pause_events": {
+          "type": ["array", "null"],
+          "description": "Detected silence events exceeding 200ms. Populated by preprocessing pipeline.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "start_sec": { "type": "number" },
+              "end_sec": { "type": "number" },
+              "duration_sec": { "type": "number" },
+              "position": {
+                "type": "string",
+                "enum": ["utterance_initial", "mid_clause", "between_clauses", "utterance_final"]
+              }
+            }
+          },
+          "default": null
+        }
+      }
+    },
+
+    "speaker_annotation": {
+      "type": "object",
+      "description": "The ASD speaker's self-labeled intent, recorded immediately after they finished speaking. This is the ground truth label for the gap computation.",
+      "required": ["intent_label", "annotation_timestamp_offset_sec", "confidence"],
+      "properties": {
+        "intent_label": {
+          "type": "string",
+          "description": "What the speaker intended to express in this utterance.",
+          "enum": ["confident", "uncertain", "enthusiastic", "explaining", "requesting", "disagreeing", "other"]
+        },
+        "intent_label_other": {
+          "type": ["string", "null"],
+          "description": "Free-text description when intent_label is 'other'.",
+          "default": null
+        },
+        "confidence": {
+          "type": "integer",
+          "description": "Speaker's confidence in their own label. 1 = not sure at all, 5 = completely certain.",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "annotation_timestamp_offset_sec": {
+          "type": "number",
+          "description": "Seconds between end of utterance and when the speaker submitted their label. Shorter offsets are higher quality (less retrospective drift).",
+          "minimum": 0
+        },
+        "free_text": {
+          "type": ["string", "null"],
+          "description": "Optional: speaker's own words about what they were trying to express.",
+          "default": null,
+          "examples": ["I was trying to show I understood the algorithm well and felt confident about my explanation"]
+        }
+      }
+    },
+
+    "evaluator_annotations": {
+      "type": "object",
+      "description": "Independent interpretations from neurotypical evaluators who heard the audio without knowing the speaker's label or ASD status.",
+      "required": ["evaluators", "consensus_label", "agreement_score"],
+      "properties": {
+        "evaluators": {
+          "type": "array",
+          "description": "One entry per evaluator. Minimum 2 evaluators required per utterance.",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "required": ["evaluator_id", "intent_label", "confidence"],
+            "properties": {
+              "evaluator_id": {
+                "type": "string",
+                "description": "Anonymized evaluator identifier.",
+                "pattern": "^eval_[a-f0-9]{6}$"
+              },
+              "intent_label": {
+                "type": "string",
+                "enum": ["confident", "uncertain", "enthusiastic", "explaining", "requesting", "disagreeing", "other"]
+              },
+              "confidence": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5
+              },
+              "asd_awareness": {
+                "type": "boolean",
+                "description": "Whether this evaluator was told the speaker may have ASD. Should be false for the primary condition.",
+                "default": false
+              },
+              "professional_background": {
+                "type": "string",
+                "description": "Evaluator's professional context — relevant because hiring context differs from general public.",
+                "enum": ["hiring_manager", "recruiter", "general_public", "researcher", "other"]
+              }
+            }
+          }
+        },
+        "consensus_label": {
+          "type": "string",
+          "description": "Majority vote across all evaluators. If no majority, 'ambiguous'.",
+          "enum": ["confident", "uncertain", "enthusiastic", "explaining", "requesting", "disagreeing", "other", "ambiguous"]
+        },
+        "agreement_score": {
+          "type": "number",
+          "description": "Proportion of evaluators who agreed on the consensus label. 1.0 = unanimous. Values below 0.5 indicate high disagreement.",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "cohens_kappa": {
+          "type": ["number", "null"],
+          "description": "Inter-rater agreement (Cohen's kappa) computed across all evaluators for this utterance. Computed post-collection.",
+          "default": null
+        }
+      }
+    },
+
+    "gap": {
+      "type": "object",
+      "description": "The computed gap between speaker intent and evaluator interpretation. This is the primary training and evaluation signal.",
+      "required": ["gap_exists", "gap_type", "gap_severity"],
+      "properties": {
+        "gap_exists": {
+          "type": "boolean",
+          "description": "True if speaker_annotation.intent_label != evaluator_annotations.consensus_label. A misinterpretation event."
+        },
+        "gap_type": {
+          "type": "string",
+          "description": "The specific direction of misinterpretation.",
+          "enum": [
+            "confident_read_as_uncertain",
+            "confident_read_as_neutral",
+            "enthusiastic_read_as_flat",
+            "enthusiastic_read_as_uncertain",
+            "explaining_read_as_confused",
+            "explaining_read_as_uncertain",
+            "requesting_read_as_demanding",
+            "disagreeing_read_as_hostile",
+            "no_gap",
+            "ambiguous_evaluators"
+          ]
+        },
+        "gap_severity": {
+          "type": "integer",
+          "description": "Semantic distance between speaker label and evaluator consensus. 0 = identical labels. 1 = adjacent on the intent spectrum. 2 = significantly different. 3 = complete opposite.",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "gap_score_continuous": {
+          "type": ["number", "null"],
+          "description": "Continuous gap score computed from embedding distance between speaker label and evaluator label in the intent embedding space. Populated after intent embeddings are trained.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": null
+        }
+      }
+    },
+
+    "prosody_features": {
+      "type": "object",
+      "description": "Extracted acoustic features. Populated by preprocessing pipeline after audio is processed. All null at annotation time.",
+      "properties": {
+        "gemaps_raw": {
+          "type": ["array", "null"],
+          "description": "88 raw GeMAPSv01b features in the canonical feature order defined by openSMILE. Null until preprocessing pipeline runs.",
+          "items": { "type": "number" },
+          "minItems": 88,
+          "maxItems": 88,
+          "default": null
+        },
+        "gemaps_normalized": {
+          "type": ["array", "null"],
+          "description": "88 GeMAPSv01b features z-score normalized against the neurotypical baseline (MSP-Podcast + MuSe statistics). Null until normalization stats are computed.",
+          "items": { "type": "number" },
+          "minItems": 88,
+          "maxItems": 88,
+          "default": null
+        },
+        "wav2vec_pooled_path": {
+          "type": ["string", "null"],
+          "description": "Relative path to the .npy file containing the mean-pooled wav2vec embedding [1024]. Stored separately due to size.",
+          "default": null,
+          "examples": ["features/spk_3a9f1b2c/sess047_q003_wav2vec.npy"]
+        },
+        "wav2vec_frame_path": {
+          "type": ["string", "null"],
+          "description": "Relative path to the .npy file containing frame-level wav2vec embeddings [T, 1024].",
+          "default": null
+        },
+        "word_sequence_path": {
+          "type": ["string", "null"],
+          "description": "Relative path to the .npy file containing the temporally aligned word sequence — the unified input to the fusion layer.",
+          "default": null
+        },
+        "pitch_profile": {
+          "type": ["string", "null"],
+          "description": "Categorical pitch profile classification. Populated by preprocessing pipeline.",
+          "enum": ["flat", "mildly_variable", "variable", "highly_variable", null],
+          "default": null
+        },
+        "speaking_rate_wpm": {
+          "type": ["number", "null"],
+          "description": "Speaking rate in words per minute (excluding pause duration). Null until computed.",
+          "default": null
+        },
+        "mean_pause_duration_sec": {
+          "type": ["number", "null"],
+          "description": "Mean duration of inter-word pauses exceeding 200ms threshold.",
+          "default": null
+        }
+      }
+    },
+
+    "system_output": {
+      "type": "object",
+      "description": "NeuroIntent system predictions. All null until the trained model runs inference on this record.",
+      "properties": {
+        "predicted_intent": {
+          "type": ["string", "null"],
+          "description": "Intent label predicted by the fusion layer MLP classifier.",
+          "default": null
+        },
+        "predicted_intent_confidence": {
+          "type": ["number", "null"],
+          "description": "Softmax probability assigned to the predicted intent class.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": null
+        },
+        "content_score": {
+          "type": ["number", "null"],
+          "description": "Content quality score from RoBERTa-large regression head.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": null
+        },
+        "estimated_standard_evaluator_score": {
+          "type": ["number", "null"],
+          "description": "Estimated score a standard (non-ASD-aware) automated system would assign. Used to compute the gap correction magnitude.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": null
+        },
+        "gap_corrected": {
+          "type": ["boolean", "null"],
+          "description": "True if predicted_intent matches speaker_annotation.intent_label. The primary per-record evaluation signal.",
+          "default": null
+        },
+        "cos_sim_C_D": {
+          "type": ["number", "null"],
+          "description": "Cosine similarity between content representation C and delivery representation D at inference time. Should be below 0.20 if decoupling succeeded.",
+          "minimum": -1.0,
+          "maximum": 1.0,
+          "default": null
+        },
+        "shap_content_attribution": {
+          "type": ["number", "null"],
+          "description": "Proportion of SHAP attribution weight assigned to content features vs prosody features. Should exceed 0.65.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": null
+        },
+        "llama3_interpretation": {
+          "type": ["string", "null"],
+          "description": "Plain-language intent interpretation generated by Llama 3 8B + LoRA. Null until model inference runs.",
+          "default": null
+        }
+      }
+    },
+
+    "metadata": {
+      "type": "object",
+      "description": "Record provenance and pipeline tracking.",
+      "required": ["created_at", "collection_method", "split"],
+      "properties": {
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp when this record was created."
+        },
+        "last_updated": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp of last field update (e.g. when preprocessing pipeline populated feature fields)."
+        },
+        "collection_method": {
+          "type": "string",
+          "enum": ["rehearsal_tool_browser", "clinical_re_annotation", "semaine_adapted"],
+          "description": "How this record was collected."
+        },
+        "split": {
+          "type": "string",
+          "description": "Train/val/test split assignment. All records from the same speaker must be in the same split.",
+          "enum": ["train", "val", "test", "unassigned"]
+        },
+        "preprocessing_status": {
+          "type": "string",
+          "description": "Pipeline processing state.",
+          "enum": ["raw", "resampled", "transcribed", "features_extracted", "normalized", "complete"],
+          "default": "raw"
+        },
+        "quality_flag": {
+          "type": "string",
+          "description": "Data quality assessment. Records flagged 'low_quality' are excluded from training.",
+          "enum": ["ok", "low_quality_audio", "low_agreement", "exclude"],
+          "default": "ok"
+        },
+        "quality_flag_reason": {
+          "type": ["string", "null"],
+          "description": "Reason for quality flag if not 'ok'.",
+          "default": null
+        }
+      }
+    }
+  },
+
+  "examples": [
+    {
+      "record_id": "gap_sess047_003",
+      "schema_version": "1.0",
+      "speaker": {
+        "speaker_id": "spk_3a9f1b2c",
+        "session_id": "sess047",
+        "session_index": 3,
+        "consent_version": "consent_v1.2",
+        "consent_timestamp": "2025-06-14T10:23:00Z",
+        "self_reported_asd_diagnosis": true,
+        "age_group": "26-35",
+        "communication_aids": ["none"]
+      },
+      "audio": {
+        "file_path": "audio/spk_3a9f1b2c/sess047_q003.wav",
+        "sample_rate": 16000,
+        "channels": 1,
+        "duration_sec": 8.4,
+        "format": "wav",
+        "recording_context": "browser_microphone",
+        "snr_db": null
+      },
+      "utterance": {
+        "question_id": "q_explain_technical_concept",
+        "question_text": "Can you explain how a binary search works?",
+        "transcript": "binary search works by repeatedly halving the search space you start with the middle element and compare it to your target if the target is smaller you eliminate the upper half if larger you eliminate the lower half you continue until you find it or exhaust the array",
+        "transcript_source": "whisper_auto",
+        "word_timestamps": null,
+        "pause_events": null
+      },
+      "speaker_annotation": {
+        "intent_label": "confident",
+        "intent_label_other": null,
+        "confidence": 4,
+        "annotation_timestamp_offset_sec": 6.2,
+        "free_text": "I know this topic well and was explaining it clearly. I felt sure about the answer."
+      },
+      "evaluator_annotations": {
+        "evaluators": [
+          {
+            "evaluator_id": "eval_a3f1b2",
+            "intent_label": "uncertain",
+            "confidence": 3,
+            "asd_awareness": false,
+            "professional_background": "hiring_manager"
+          },
+          {
+            "evaluator_id": "eval_9d2c44",
+            "intent_label": "uncertain",
+            "confidence": 4,
+            "asd_awareness": false,
+            "professional_background": "recruiter"
+          },
+          {
+            "evaluator_id": "eval_f71a09",
+            "intent_label": "explaining",
+            "confidence": 2,
+            "asd_awareness": false,
+            "professional_background": "general_public"
+          }
+        ],
+        "consensus_label": "uncertain",
+        "agreement_score": 0.67,
+        "cohens_kappa": null
+      },
+      "gap": {
+        "gap_exists": true,
+        "gap_type": "confident_read_as_uncertain",
+        "gap_severity": 2,
+        "gap_score_continuous": null
+      },
+      "prosody_features": {
+        "gemaps_raw": null,
+        "gemaps_normalized": null,
+        "wav2vec_pooled_path": null,
+        "wav2vec_frame_path": null,
+        "word_sequence_path": null,
+        "pitch_profile": null,
+        "speaking_rate_wpm": null,
+        "mean_pause_duration_sec": null
+      },
+      "system_output": {
+        "predicted_intent": null,
+        "predicted_intent_confidence": null,
+        "content_score": null,
+        "estimated_standard_evaluator_score": null,
+        "gap_corrected": null,
+        "cos_sim_C_D": null,
+        "shap_content_attribution": null,
+        "llama3_interpretation": null
+      },
+      "metadata": {
+        "created_at": "2025-06-14T10:31:22Z",
+        "last_updated": "2025-06-14T10:31:22Z",
+        "collection_method": "rehearsal_tool_browser",
+        "split": "unassigned",
+        "preprocessing_status": "raw",
+        "quality_flag": "ok",
+        "quality_flag_reason": null
+      }
+    }
+  ]
+}
