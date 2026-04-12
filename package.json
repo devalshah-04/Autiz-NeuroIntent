@@ -1,0 +1,23 @@
+{
+  "name": "autiz-neurointent",
+  "version": "1.0.0",
+  "description": "**Communication-style-invariant intent interpretation for ASD speakers in automated hiring pipelines.**",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/devalshah-04/Autiz-NeuroIntent.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/devalshah-04/Autiz-NeuroIntent/issues"
+  },
+  "homepage": "https://github.com/devalshah-04/Autiz-NeuroIntent#readme",
+  "dependencies": {
+    "ws": "^8.20.0"
+  }
+}
