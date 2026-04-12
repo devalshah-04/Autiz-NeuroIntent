@@ -1,27 +1,28 @@
 import { useState } from 'react'
 import ConsentScreen from './ConsentScreen'
 import RecordingScreen from './RecordingScreen'
+import ProcessingScreen from './ProcessingScreen'
 
 function App() {
-  // Tracks which screen the user is on
   const [screen, setScreen] = useState('consent')
-
-  // Stores consent data from screen 1
   const [consentData, setConsentData] = useState(null)
-
-  // Stores all recordings from screen 2
   const [recordings, setRecordings] = useState([])
+  const [results, setResults] = useState([])
 
-  // Called when user proceeds from consent screen
   const handleConsentProceed = (data) => {
     setConsentData(data)
     setScreen('recording')
   }
 
-  // Called when all 5 questions are recorded
   const handleRecordingComplete = (data) => {
     setRecordings(data)
     setScreen('processing')
+  }
+
+  // Called when all answers are processed — moves to reflection report
+  const handleProcessingComplete = (data) => {
+    setResults(data)
+    setScreen('report')
   }
 
   return (
@@ -35,10 +36,17 @@ function App() {
           onComplete={handleRecordingComplete}
         />
       )}
-      {/* Placeholder for next screens */}
       {screen === 'processing' && (
+        <ProcessingScreen
+          recordings={recordings}
+          consentData={consentData}
+          onComplete={handleProcessingComplete}
+        />
+      )}
+      {/* Placeholder for reflection report */}
+      {screen === 'report' && (
         <div className="flex items-center justify-center min-h-screen">
-          <p className="text-gray-400">Processing screen coming next...</p>
+          <p className="text-gray-400">Reflection report coming next...</p>
         </div>
       )}
     </div>
