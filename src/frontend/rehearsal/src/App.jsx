@@ -2,6 +2,7 @@ import { useState } from 'react'
 import ConsentScreen from './ConsentScreen'
 import RecordingScreen from './RecordingScreen'
 import ProcessingScreen from './ProcessingScreen'
+import ReportScreen from './ReportScreen'
 
 function App() {
   const [screen, setScreen] = useState('consent')
@@ -19,7 +20,6 @@ function App() {
     setScreen('processing')
   }
 
-  // Called when all answers are processed — moves to reflection report
   const handleProcessingComplete = (data) => {
     setResults(data)
     setScreen('report')
@@ -43,11 +43,11 @@ function App() {
           onComplete={handleProcessingComplete}
         />
       )}
-      {/* Placeholder for reflection report */}
       {screen === 'report' && (
-        <div className="flex items-center justify-center min-h-screen">
-          <p className="text-gray-400">Reflection report coming next...</p>
-        </div>
+        <ReportScreen
+          recordings={recordings}
+          results={results}
+        />
       )}
     </div>
   )
