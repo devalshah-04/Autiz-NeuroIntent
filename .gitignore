@@ -1,0 +1,20 @@
+# Python cache files — never commit these
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Test cache
+.pytest_cache/
+
+# Environment files
+.env
+
+# Mac junk
+.DS_Store
+
+# Modal cache
+.modal/
+
+# Audio test files
+src/api/test.wav
