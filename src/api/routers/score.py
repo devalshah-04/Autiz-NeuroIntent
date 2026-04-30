@@ -5,10 +5,9 @@ from fastapi import APIRouter, UploadFile, File, HTTPException
 import os
 import shutil
 
-# Import our mock pipeline
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-import mock_pipeline
+import pipeline as mock_pipeline
 
 # Create router instance for the /score endpoint
 router = APIRouter()

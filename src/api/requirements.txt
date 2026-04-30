@@ -20,3 +20,16 @@ silero-vad==6.2.1
 
 # ASR — deployment version of WhisperX
 faster-whisper==1.2.1
+
+# NLP — RoBERTa content embedding
+transformers>=4.40.0
+sentencepiece>=0.1.99
+
+# Prosody — GeMAPS feature extraction
+opensmile>=2.4.0
+
+# Numerics
+numpy>=1.24.0
+
+# FFmpeg — bundled binary, no system package required
+imageio-ffmpeg>=0.4.9

@@ -8,7 +8,7 @@ import shutil
 # Import our utility functions for anonymization and audio consent
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-import mock_pipeline
+import pipeline as mock_pipeline
 from utils import delete_audio_if_no_consent, build_session_metadata
 
 # Create router instance for the /analyze endpoint
