@@ -6,7 +6,7 @@ Preprocessing pipeline for the NeuroIntent ASD Intent Gap Dataset.
 Transforms raw audio files into the unified representation consumed by
 the cross-modal fusion layer. Produces three artefacts per clip:
   1. Level 1 JSON record (AudioRecord) — identity, transcript, labels
-  2. GeMAPS feature vector — 88 floats, .npy
+  2. GeMAPS feature vector — 62 floats, .npy
   3. wav2vec frame embeddings — [T, 1024] floats, .npy
 
 The pipeline is designed to be run dataset-by-dataset in the sequence
@@ -361,7 +361,7 @@ class AudioEmbeddingExtractor:
 
 class GeMAPSExtractor:
     """
-    Extracts the 88 GeMAPSv01b acoustic features using openSMILE.
+    Extracts the 62 GeMAPSv01b acoustic features using openSMILE.
 
     These features are human-interpretable (pitch, energy, rate, pauses)
     and serve two roles:
@@ -373,9 +373,9 @@ class GeMAPSExtractor:
     depend on consistent ordering.
     """
 
-    # GeMAPSv01b produces exactly 88 features. If this changes, the schema
+    # GeMAPSv01b produces exactly 62 features. If this changes, the schema
     # and normalization pipeline must be updated to match.
-    N_FEATURES = 88
+    N_FEATURES = 62
 
     def __init__(self):
         self.smile = None
@@ -393,10 +393,10 @@ class GeMAPSExtractor:
 
     def extract(self, wav_path: Path) -> np.ndarray:
         """
-        Extract 88 GeMAPS features from a WAV file.
+        Extract 62 GeMAPS features from a WAV file.
 
         Returns:
-            features: np.ndarray, shape [88], dtype float32
+            features: np.ndarray, shape [62], dtype float32
 
         Note: openSMILE requires a file path, not an in-memory array.
         Ensure the WAV file exists at wav_path before calling.
@@ -422,11 +422,11 @@ def compute_normalization_stats(
     neurotypical baseline before any other normalization is performed.
 
     Args:
-        gemaps_array: np.ndarray, shape [N_clips, 88]
+        gemaps_array: np.ndarray, shape [N_clips, 62]
         output_path: path to save stats JSON
 
     Returns:
-        stats: dict with keys 'mean' ([88] floats) and 'std' ([88] floats)
+        stats: dict with keys 'mean' ([62] floats) and 'std' ([62] floats)
     """
     # TODO: implement stats computation
     # mean = gemaps_array.mean(axis=0)
@@ -448,11 +448,11 @@ def normalize_gemaps(
     Apply z-score normalization to GeMAPS features using precomputed stats.
 
     Args:
-        features: np.ndarray, shape [88]
-        stats: dict with keys 'mean' and 'std', each a list of 88 floats
+        features: np.ndarray, shape [62]
+        stats: dict with keys 'mean' and 'std', each a list of 62 floats
 
     Returns:
-        normalized: np.ndarray, shape [88]
+        normalized: np.ndarray, shape [62]
     """
     # TODO: implement normalization
     # mean = np.array(stats["mean"], dtype=np.float32)
@@ -489,12 +489,12 @@ def build_word_sequence(
             start_sec: float
             end_sec: float
             wav2vec_pooled: list[float] — 1024-dim
-            gemaps: list[float] — 88-dim (clip-level placeholder until windowed extraction)
+            gemaps: list[float] — 62-dim (clip-level placeholder until windowed extraction)
 
     Args:
         word_timestamps: from WhisperTranscriber.transcribe()
         frame_embeddings: [T, 1024] from AudioEmbeddingExtractor.extract()
-        gemaps_features: [88] from GeMAPSExtractor.extract()
+        gemaps_features: [62] from GeMAPSExtractor.extract()
         frame_duration_ms: duration of each wav2vec frame in milliseconds
         pause_threshold_sec: minimum silence duration to insert PAUSE token
     """
