@@ -1,8 +1,11 @@
 // Import React hooks — no external WebSocket library needed
 import { useState, useEffect, useRef } from 'react'
 
-// Read backend URL from environment variable
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'ws://localhost:8000'
+// Read backend URL from environment variable — overlay needs a ws(s):// scheme,
+// so derive it from the shared http(s):// VITE_BACKEND_URL instead of keeping a
+// second env var in sync with the other two apps.
+const HTTP_BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
+const BACKEND_URL = HTTP_BACKEND_URL.replace(/^http/, 'ws')
 
 function OverlayCard() {
     // Controls whether recruiter has opted in — default is OFF per design rules

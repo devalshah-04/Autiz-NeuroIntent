@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build & cache
+dist/
+build/
+__pycache__/
+.venv/
+env/
+
+# Environment & secrets
+.env
+.env.*
+
+# Lock files
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Logs & temp
+*.log
+*.tmp
+
+# Large binaries
+*.wav
+*.mp3
+*.mp4
+*.zip
+*.tar.gz

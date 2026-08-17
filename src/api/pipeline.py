@@ -244,22 +244,51 @@ def run(audio_path: str, mode: str) -> dict:
     top5_idx = np.argsort(np.abs(prosody_np))[::-1][:5]
     top_features = [feature_names[i] for i in top5_idx]
 
-    # ── 6. Prosody observations (heuristic from GeMAPS stats) ──
-    # Features in GeMAPSv01b include F0 std — use overall feature std as proxy
-    prosody_std = float(np.std(prosody_np))
-    flat_pitch = prosody_std < 15.0
+    # ── 6. Prosody observations from actual GeMAPSv01b feature values ──
+    # Index features by name for direct lookup — safer than positional indexing
+    feat = {name: float(val) for name, val in zip(feature_names, prosody_np)}
+
+    # F0semitoneFrom27.5Hz_sma3nz_stddevNorm: normalised pitch std dev.
+    # GeMAPSv01b canonical name; fall back to substring search if version differs.
+    f0_stddev_key = next(
+        (k for k in feat if "F0semitoneFrom27.5Hz" in k and "stddevNorm" in k), None
+    )
+    f0_stddev = feat[f0_stddev_key] if f0_stddev_key else float(np.std(prosody_np))
+    flat_pitch = f0_stddev < 0.5   # below 0.5 semitone std → flat delivery
+
+    # MeanUnvoicedSegmentLength: average silence gap in seconds.
+    mean_pause = feat.get("MeanUnvoicedSegmentLength", 0.0)
+    processing_pause_sec = round(mean_pause, 2) if mean_pause > 0.15 else None
+
+    # VoicedSegmentsPerSec: speaking rate proxy.
+    voiced_per_sec = feat.get("VoicedSegmentsPerSec", None)
+    if voiced_per_sec is not None:
+        if voiced_per_sec > 4.0:
+            rate_label = "Fast speaking pace"
+        elif voiced_per_sec < 2.0:
+            rate_label = "Deliberate, measured pace"
+        else:
+            rate_label = "Steady speaking pace"
+    else:
+        rate_label = "Steady speaking pace"
 
     # ── 7. Bias-correction gap estimate ──
     # Simulates what a traditional prosody-penalising system would score
     prosody_penalty = 0.35 if flat_pitch else 0.12
     score_without_system = round(max(0.10, content_score * (1.0 - prosody_penalty)), 4)
 
-    # ── 8. Delivery pattern strings (for ReportScreen) ──
-    delivery_pattern = [
-        "Low pitch variation throughout" if flat_pitch else "Natural pitch variation detected",
-        "Steady speaking pace detected",
-        "Consistent volume level",
-    ]
+    # ── 8. Delivery pattern strings — each entry driven by actual feature values ──
+    pitch_label = (
+        f"Low pitch variation (F0 σ = {f0_stddev:.2f} semitones)"
+        if flat_pitch
+        else f"Natural pitch variation (F0 σ = {f0_stddev:.2f} semitones)"
+    )
+    pause_label = (
+        f"Processing pauses detected (mean {processing_pause_sec}s)"
+        if processing_pause_sec
+        else "No significant processing pauses"
+    )
+    delivery_pattern = [pitch_label, rate_label, pause_label]
 
     # ── 9. Confidence bound ──
     if intent_conf > 0.70:
@@ -269,11 +298,15 @@ def run(audio_path: str, mode: str) -> dict:
     else:
         confidence_bound = "low"
 
-    # ── 10. Plain-language interpretation ──
+    # ── 10. Interpretation — includes actual score and transcript excerpt ──
+    excerpt = transcript[:55].rstrip()
+    if len(transcript) > 55:
+        excerpt += "..."
     style_desc = "flat prosody and extended pauses" if flat_pitch else "varied prosody"
     content_quality = "strong" if content_score > 0.65 else "moderate"
     interpretation = (
-        f"Your answer demonstrated clear content understanding. "
+        f"Content quality score: {content_score:.0%}. "
+        f"Excerpt: \"{excerpt}\". "
         f"The system detected {style_desc} that traditional scoring may undervalue. "
         f"Content analysis shows {content_quality} relevance to the question asked."
     )
@@ -298,7 +331,7 @@ def run(audio_path: str, mode: str) -> dict:
         # Acoustic observations
         "acoustic_observations": {
             "flat_pitch_detected":      flat_pitch,
-            "processing_pause_sec":     None,
+            "processing_pause_sec":     processing_pause_sec,
             "content_score_unaffected": True,
         },
         # Audit trail
