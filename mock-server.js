@@ -1,4 +1,6 @@
-// Simple WebSocket server that simulates Krishiv's backend
+// DEV MOCK ONLY — not part of the product and not used in the v2 milestone.
+// Simple WebSocket server that simulates the (disabled) /stream endpoint for overlay UI
+// testing. Every value it sends is random or hardcoded; none of it comes from a model.
 const { WebSocketServer } = require('ws')
 
 // Start server on port 8000

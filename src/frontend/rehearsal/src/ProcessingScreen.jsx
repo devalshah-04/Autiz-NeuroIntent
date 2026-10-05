@@ -1,9 +1,6 @@
 // Import hooks for state and side effects
-import { useState, useEffect } from 'react'
-import axios from 'axios'
-
-// Read backend URL from environment variable
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
+import { useState, useEffect, useRef } from 'react'
+import { analyzeRecording, describeError } from './analyze'
 
 function ProcessingScreen({ recordings, consentData, onComplete }) {
     // Tracks processing status for each answer — 'waiting', 'processing', 'done', 'error'
@@ -11,84 +8,63 @@ function ProcessingScreen({ recordings, consentData, onComplete }) {
         recordings.map(() => 'waiting')
     )
 
-    // Stores the results returned from backend for each answer
-    const [results, setResults] = useState(
+    // Error message for each answer that failed (null if none)
+    const [errors, setErrors] = useState(
         recordings.map(() => null)
     )
 
+    // True once a pass over the answers has finished with at least one failure
+    const [needsAttention, setNeedsAttention] = useState(false)
+
+    // Real backend results per answer. A failed answer stays null — it is never replaced by invented data.
+    const resultsRef = useRef(recordings.map(() => null))
+    // Latest error message per answer, handed to the report so it can explain failures
+    const errorsRef = useRef(recordings.map(() => null))
+
     // Runs when screen loads — processes each recording one by one
     useEffect(() => {
-        processAllRecordings()
+        processRecordings(recordings.map((_, i) => i))
     }, [])
 
-    // Sends each recording to backend sequentially
-    const processAllRecordings = async () => {
-        const allResults = []
+    // Sends the recordings at the given indices to the backend sequentially
+    const processRecordings = async (indices) => {
+        setNeedsAttention(false)
 
-        for (let i = 0; i < recordings.length; i++) {
+        for (const i of indices) {
             // Mark this answer as currently processing
+            errorsRef.current[i] = null
             setStatuses(prev => {
                 const updated = [...prev]
                 updated[i] = 'processing'
                 return updated
             })
+            setErrors(prev => {
+                const updated = [...prev]
+                updated[i] = null
+                return updated
+            })
 
             try {
-                // Build form data to send audio file to backend
-                const formData = new FormData()
-                formData.append('audio', recordings[i].audioBlob, `answer_${i + 1}.webm`)
-                formData.append('label', recordings[i].label)
-                formData.append('question_index', i)
-                formData.append('mode', recordings[i].mode)
+                // POST this answer to the /analyze endpoint
+                resultsRef.current[i] = await analyzeRecording(recordings[i], i)
 
-                // POST to Krishiv's /analyze endpoint
-                const response = await axios.post(`${BACKEND_URL}/analyze`, formData, {
-                    headers: { 'Content-Type': 'multipart/form-data' }
-                })
-
-                allResults.push(response.data)
-
-                // Mark this answer as done
                 setStatuses(prev => {
                     const updated = [...prev]
                     updated[i] = 'done'
                     return updated
                 })
-
-                setResults(prev => {
-                    const updated = [...prev]
-                    updated[i] = response.data
-                    return updated
-                })
-
             } catch (err) {
-                // If backend not available, use mock data for now
-                const mockResult = {
-                    content_quality_score: parseFloat((Math.random() * 0.4 + 0.55).toFixed(2)),
-                    delivery_pattern: [
-                        'Steady speaking pace detected',
-                        'Low pitch variation throughout',
-                        'Consistent volume level'
-                    ],
-                    score_without_system: parseFloat((Math.random() * 0.3 + 0.4).toFixed(2)),
-                    score_with_system: parseFloat((Math.random() * 0.3 + 0.7).toFixed(2)),
-                    confidence_bound: ['low', 'medium', 'high'][Math.floor(Math.random() * 3)],
-                    interpretation: `Your answer demonstrated clear content understanding. The system detected steady delivery patterns that traditional scoring may undervalue. Content analysis shows strong relevance to the question asked.`,
-                    transcript: `Answer ${i + 1} transcript will appear here when backend is connected.`
-                }
-
-                allResults.push(mockResult)
-
-                // Mark as done even with mock data
+                // Surface the failure — no placeholder scores are ever shown
+                resultsRef.current[i] = null
+                errorsRef.current[i] = describeError(err)
                 setStatuses(prev => {
                     const updated = [...prev]
-                    updated[i] = 'done'
+                    updated[i] = 'error'
                     return updated
                 })
-
-                setResults(prev => {
+                setErrors(prev => {
                     const updated = [...prev]
-                    updated[i] = mockResult
+                    updated[i] = describeError(err)
                     return updated
                 })
             }
@@ -97,8 +73,20 @@ function ProcessingScreen({ recordings, consentData, onComplete }) {
             await new Promise(resolve => setTimeout(resolve, 1000))
         }
 
-        // All done — move to reflection report screen
-        setTimeout(() => onComplete(allResults), 800)
+        if (resultsRef.current.every(r => r !== null)) {
+            // All answers analysed — move to reflection report screen
+            setTimeout(() => onComplete([...resultsRef.current], [...errorsRef.current]), 800)
+        } else {
+            setNeedsAttention(true)
+        }
+    }
+
+    // Re-send only the answers that failed
+    const retryFailed = () => {
+        const failed = resultsRef.current
+            .map((r, i) => (r === null ? i : -1))
+            .filter(i => i >= 0)
+        processRecordings(failed)
     }
 
     // Status icon for each answer row
@@ -155,36 +143,73 @@ function ProcessingScreen({ recordings, consentData, onComplete }) {
                     {recordings.map((rec, i) => (
                         <div
                             key={i}
-                            className={`flex items-center justify-between p-3 rounded-xl border transition-colors ${statuses[i] === 'processing'
+                            className={`p-3 rounded-xl border transition-colors ${statuses[i] === 'processing'
                                     ? 'border-indigo-500 bg-indigo-950'
                                     : statuses[i] === 'done'
                                         ? 'border-green-700 bg-gray-800'
-                                        : 'border-gray-700 bg-gray-800'
+                                        : statuses[i] === 'error'
+                                            ? 'border-red-700 bg-gray-800'
+                                            : 'border-gray-700 bg-gray-800'
                                 }`}
                         >
-                            {/* Answer label and question preview */}
-                            <div>
-                                <p className="text-white text-sm font-medium">
-                                    Answer {i + 1}
-                                </p>
-                                <p className="text-gray-500 text-xs mt-0.5 truncate w-64">
-                                    {rec.question}
-                                </p>
+                            <div className="flex items-center justify-between">
+                                {/* Answer label and question preview */}
+                                <div>
+                                    <p className="text-white text-sm font-medium">
+                                        Answer {i + 1}
+                                    </p>
+                                    <p className="text-gray-500 text-xs mt-0.5 truncate w-64">
+                                        {rec.question}
+                                    </p>
+                                </div>
+
+                                {/* Status icon and label */}
+                                <div className="flex items-center gap-2">
+                                    <span className="text-sm">{getStatusIcon(statuses[i])}</span>
+                                    <span className={`text-xs font-medium ${statuses[i] === 'done' ? 'text-green-400' :
+                                            statuses[i] === 'processing' ? 'text-indigo-300' :
+                                                statuses[i] === 'error' ? 'text-red-400' :
+                                                    'text-gray-500'
+                                        }`}>
+                                        {getStatusLabel(statuses[i])}
+                                    </span>
+                                </div>
                             </div>
 
-                            {/* Status icon and label */}
-                            <div className="flex items-center gap-2">
-                                <span className="text-sm">{getStatusIcon(statuses[i])}</span>
-                                <span className={`text-xs font-medium ${statuses[i] === 'done' ? 'text-green-400' :
-                                        statuses[i] === 'processing' ? 'text-indigo-300' :
-                                            'text-gray-500'
-                                    }`}>
-                                    {getStatusLabel(statuses[i])}
-                                </span>
-                            </div>
+                            {/* Why this answer failed */}
+                            {statuses[i] === 'error' && errors[i] && (
+                                <p className="text-red-400 text-xs mt-2 break-words">
+                                    {errors[i]}
+                                </p>
+                            )}
                         </div>
                     ))}
                 </div>
+
+                {/* Shown after a pass in which at least one answer failed */}
+                {needsAttention && (
+                    <div className="mt-6 space-y-2">
+                        <p className="text-red-300 text-sm">
+                            {doneCount === 0
+                                ? 'None of your answers could be analysed. No results are available.'
+                                : 'Some answers could not be analysed.'}
+                        </p>
+                        <button
+                            onClick={retryFailed}
+                            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-semibold transition-colors"
+                        >
+                            Retry failed answers
+                        </button>
+                        {doneCount > 0 && (
+                            <button
+                                onClick={() => onComplete([...resultsRef.current], [...errorsRef.current])}
+                                className="w-full py-2.5 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-xl text-sm font-medium transition-colors"
+                            >
+                                View report for the answers that worked
+                            </button>
+                        )}
+                    </div>
+                )}
 
                 {/* Footer note */}
                 <p className="text-gray-600 text-xs text-center mt-6">

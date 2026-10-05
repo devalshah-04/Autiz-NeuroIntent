@@ -2,10 +2,9 @@
 
 **Communication-style-invariant intent interpretation for ASD speakers in automated hiring pipelines.**
 
-[![Status](https://img.shields.io/badge/status-architecture%20%26%20data%20preparation-blue)](.)
+[![Status](https://img.shields.io/badge/status-research%20prototype-blue)](PROJECT_STATUS.md)
 [![Python](https://img.shields.io/badge/python-3.11-blue)](.)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Phase](https://img.shields.io/badge/phase-pre--training-orange)](.)
+[![Phase](https://img.shields.io/badge/phase-v2%20in%20progress-orange)](PROJECT_STATUS.md)
 
 ---
 
@@ -29,7 +28,7 @@ Raw Speech
     ▼
 ┌─────────────────────────────────────────────────────────┐
 │  LAYER 1 — Speech Decomposition                         │
-│  Whisper large-v3 · wav2vec 2.0 / HuBERT · GeMAPS 88   │
+│  Whisper large-v3 · wav2vec 2.0 / HuBERT · GeMAPS 62   │
 │  Parallel: Direct audio-to-intent branch (SLU)          │
 └────────────────────────┬────────────────────────────────┘
                          │
@@ -49,9 +48,11 @@ Raw Speech
 └─────────────────────────────────────────────────────────┘
 ```
 
+> **Implementation status:** the diagram above is the long-term *target*. The current milestone builds only a content scorer, a prosody branch kept statistically independent of it, and the serving/evaluation around them. Everything else in the diagram (Llama 3, SLU branch, emotion2vec, real-time overlay, platform API) is **future work** — see [PROJECT_STATUS.md](PROJECT_STATUS.md).
+
 The **novel contribution** is the cross-modal fusion and decoupling layer. Content representation **C** and delivery representation **D** are trained to be orthogonal via a cosine similarity penalty in the loss function. Same answer, different prosody → identical content score. This is the property that no existing hiring evaluation system has.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical specification.
+See [Architecture Specification.md](Architecture%20Specification.md) for the full target architecture, and [PROJECT_STATUS.md](PROJECT_STATUS.md) for what is actually implemented today.
 
 ---
 
@@ -67,25 +68,27 @@ We are constructing the **ASD Intent Gap Dataset** — the first dataset (to our
 
 This gap vector is the primary training signal for the decoupling module and the primary evaluation metric for the system. A model that reduces this gap by predicting speaker intent correctly — against the systematic misinterpretation baseline established by neurotypical evaluators — is a model that works.
 
-Dataset schema: [`dataset_schema.json`](dataset_schema.json)
+Dataset schema: [`configs/Dataset_Schema.json`](configs/Dataset_Schema.json)
 
 ---
 
 ## Tech Stack
 
-| Component | Tool | Role |
-|---|---|---|
-| ASR | Whisper large-v3 | Transcription + word-level timestamps |
-| Audio embeddings | wav2vec 2.0 / HuBERT / WavLM | Frame-level speech representations |
-| Prosody features | openSMILE GeMAPSv01b | 88 interpretable acoustic features |
-| Direct SLU branch | HuBERT fine-tuned | Parallel audio-to-intent without ASR |
-| Content scoring | RoBERTa-large | Text-only content quality regression |
-| Emotion encoding | emotion2vec (ASD-adapted) | Audio-side affective representation |
-| Intent reasoning | Llama 3 8B + LoRA | Structured intent interpretation |
-| Explainability | SHAP (KernelExplainer) | Feature attribution for audit trail |
-| Training framework | PyTorch + HuggingFace Transformers | |
-| Fine-tuning | PEFT / bitsandbytes / TRL | LoRA, 4-bit quantization |
-| Serving (planned) | FastAPI + vLLM + Modal.com | Real-time inference |
+| Component | Tool | Role | Status |
+|---|---|---|---|
+| ASR | Whisper (base model in use; large-v3 planned) | Transcription | Built (base, not fine-tuned) |
+| Audio embeddings | wav2vec 2.0 / HuBERT / WavLM | Frame-level speech representations | Future work |
+| Prosody features | openSMILE GeMAPSv01b (Functionals) | 62 interpretable acoustic features | Built |
+| Direct SLU branch | HuBERT fine-tuned | Parallel audio-to-intent without ASR | Future work |
+| Content scoring | RoBERTa-large embedding + small scorer network | Text-only content quality regression | In progress (v2) |
+| Emotion encoding | emotion2vec (ASD-adapted) | Audio-side affective representation | Future work |
+| Intent reasoning | Llama 3 8B + LoRA | Structured intent interpretation | Future work (stub only) |
+| Explainability | SHAP (KernelExplainer) | Feature attribution for audit trail | Future work (magnitude proxy only) |
+| Training framework | PyTorch + HuggingFace Transformers | | Built |
+| Fine-tuning | PEFT / bitsandbytes / TRL | LoRA, 4-bit quantization | Future work |
+| Serving | FastAPI + Modal.com | Inference API | Built (v1 model; v2 in Phase 4) |
+| Real-time overlay | WebSocket `/stream` + overlay app | Evaluator-facing live card | Prototype, not connected |
+| Evaluator portal | Evaluator app | Label collection | Prototype, not connected |
 
 ---
 
@@ -100,42 +103,42 @@ Dataset schema: [`dataset_schema.json`](dataset_schema.json)
 | SEMAINE | Gap annotation schema reference | Public |
 | MuSe Challenge | Prosody encoder pretraining | Public (registration) |
 | NDAR (NIH) | Adult ASD speech | Application submitted |
-| ASD Intent Gap Dataset | **Novel — primary training signal** | Collected via rehearsal tool |
+| ASD Intent Gap Dataset | **Novel — intended primary training signal** | **Future work.** The rehearsal tool does not store anything in the current milestone. |
 
 ---
 
 ## Current Status
 
-**Phase: Architecture and data preparation**
+**Phase: research prototype — v2 model under construction.** Full, dated detail lives in [`PROJECT_STATUS.md`](PROJECT_STATUS.md); this section is only a summary.
 
-The model architecture is fully specified. The data schema, preprocessing pipeline, and annotation tooling are in active development. No training runs have been executed yet.
+What exists in the repository today:
+- A FastAPI backend (`src/api/`) with `/analyze`, `/score` and `/health`, deployable on Modal.
+- A rehearsal web app (`src/frontend/rehearsal/`) that records answers, sends them to `/analyze` and shows a per-answer report. If the backend fails, the app now shows an error, never placeholder scores.
+- A Kaggle training notebook (`notebooks/`) and a v1 fusion-layer checkpoint (`models/checkpoints/fusion_layer_trained_v1.pt`). v1 was trained with a loss that does not produce orthogonal representations and is being **replaced by v2**; do not treat v1 numbers as results.
+- Prototype evaluator and overlay apps that are **not connected** to a working backend path.
 
-Completed:
-- [x] Full architecture specification and design decisions
-- [x] Three-level data schema (raw audio record, processed features, gap annotation)
-- [x] Dataset access requests submitted (MSP-Podcast, IEMOCAP, NDAR)
-- [x] Preprocessing pipeline skeleton
-- [x] Annotation schema for gap dataset
-- [x] Synthetic prosody perturbation strategy defined (parselmouth-based)
+Not built (future work): intent classification, Llama 3 LoRA reasoning, HuBERT SLU branch, emotion2vec adaptation, Whisper fine-tuning, live overlay streaming, the gap-annotation data collection, NDAR/ADOS data. Nothing in this project makes or supports any autism-detection claim.
 
-In progress:
-- [ ] Common Voice preprocessing and manifest generation
-- [ ] openSMILE GeMAPS extraction pipeline
-- [ ] wav2vec / HuBERT benchmark experiment design
-- [ ] Rehearsal tool (annotation collection frontend)
-- [ ] Synthetic ASD pair generation from CMU-MOSI
+**No evaluation results have been recorded in this repository yet.** They will be added to `PROJECT_STATUS.md` and the results docs after the v2 training run.
 
-Upcoming:
-- [ ] Whisper large-v3 fine-tuning on atypical speech
-- [ ] RoBERTa content scorer training
-- [ ] Cross-modal fusion layer implementation
-- [ ] Decoupling loss training and ablation study
-- [ ] Llama 3 LoRA fine-tuning on gap annotations
-- [ ] End-to-end evaluation: gap reduction metric
+### Phase checklist
 
----
+| Phase | What | Status |
+|---|---|---|
+| 0 | Docs baseline, remove fake-result fallback, CORS, small fixes | Done (except untracking `src/api/test.wav`) |
+| 1 | Notebook v2 edits (not executed) | Not started |
+| 2 | Run notebook on Kaggle; ingest and validate artifacts | Not started |
+| 3 | WER spot check; Vaani prosody add-on (optional) | Not started |
+| 4 | Backend serves v2 | Not started |
+| 5 | Rehearsal frontend end to end | Not started |
+| 6 | Modal redeploy, live test, demo script | Not started |
+| 7 | Final docs | Not started |
+
+Exit criteria and dates are in [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
 
 ## Roadmap
+
+> The dates below are the original proposal and are stale. The current milestone plan is in [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
 
 ```
 Q1 2025 ─── Architecture specification              ✓ Complete
@@ -196,5 +199,7 @@ Q1 2026 ─── Speaker personalization (adapter layers)
 - MIT Media Lab. *Automated Interview Scoring Dataset.* [[lab]](https://affect.media.mit.edu/)
 
 ---
+
+**License:** not yet chosen.
 
 *B.Tech Major Project · 2025–2026*

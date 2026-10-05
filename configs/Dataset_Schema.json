@@ -330,18 +330,18 @@
       "properties": {
         "gemaps_raw": {
           "type": ["array", "null"],
-          "description": "88 raw GeMAPSv01b features in the canonical feature order defined by openSMILE. Null until preprocessing pipeline runs.",
+          "description": "62 raw GeMAPSv01b Functionals features in the canonical feature order defined by openSMILE. Null until preprocessing pipeline runs.",
           "items": { "type": "number" },
-          "minItems": 88,
-          "maxItems": 88,
+          "minItems": 62,
+          "maxItems": 62,
           "default": null
         },
         "gemaps_normalized": {
           "type": ["array", "null"],
-          "description": "88 GeMAPSv01b features z-score normalized against the neurotypical baseline (MSP-Podcast + MuSe statistics). Null until normalization stats are computed.",
+          "description": "62 GeMAPSv01b features z-score normalized against a neurotypical baseline. In the v2 milestone the baseline is the training split of LibriSpeech test-clean (models/checkpoints/gemaps_scaler.json); the long-term plan is MSP-Podcast + MuSe statistics. Null until normalization stats are computed.",
           "items": { "type": "number" },
-          "minItems": 88,
-          "maxItems": 88,
+          "minItems": 62,
+          "maxItems": 62,
           "default": null
         },
         "wav2vec_pooled_path": {

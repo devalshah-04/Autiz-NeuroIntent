@@ -8,7 +8,7 @@ import shutil
 # Import our utility functions for anonymization and audio consent
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-import pipeline as mock_pipeline
+import pipeline
 from utils import delete_audio_if_no_consent, build_session_metadata
 
 # Create router instance for the /analyze endpoint
@@ -36,7 +36,7 @@ async def analyze_audio(
         shutil.copyfileobj(audio.file, buffer)
 
     # Call the pipeline with the temp file path and mode
-    result = mock_pipeline.run(audio_path=temp_path, mode=mode)
+    result = pipeline.run(audio_path=temp_path, mode=mode)
 
     # Delete audio based on consent — hard rule enforcement
     delete_audio_if_no_consent(temp_path, consent=audio_storage_consent)

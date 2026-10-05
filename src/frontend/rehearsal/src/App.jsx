@@ -9,6 +9,7 @@ function App() {
   const [consentData, setConsentData] = useState(null)
   const [recordings, setRecordings] = useState([])
   const [results, setResults] = useState([])
+  const [errors, setErrors] = useState([])
 
   const handleConsentProceed = (data) => {
     setConsentData(data)
@@ -20,8 +21,9 @@ function App() {
     setScreen('processing')
   }
 
-  const handleProcessingComplete = (data) => {
+  const handleProcessingComplete = (data, errorMessages = []) => {
     setResults(data)
+    setErrors(errorMessages)
     setScreen('report')
   }
 
@@ -47,6 +49,7 @@ function App() {
         <ReportScreen
           recordings={recordings}
           results={results}
+          errors={errors}
         />
       )}
     </div>

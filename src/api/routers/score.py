@@ -7,7 +7,7 @@ import shutil
 
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-import pipeline as mock_pipeline
+import pipeline
 
 # Create router instance for the /score endpoint
 router = APIRouter()
@@ -33,7 +33,7 @@ async def score_audio(
         shutil.copyfileobj(audio.file, buffer)
 
     # Call the pipeline in universal_fairness mode only
-    result = mock_pipeline.run(audio_path=temp_path, mode="universal_fairness")
+    result = pipeline.run(audio_path=temp_path, mode="universal_fairness")
 
     # Delete the temp audio file immediately after feature extraction
     os.remove(temp_path)

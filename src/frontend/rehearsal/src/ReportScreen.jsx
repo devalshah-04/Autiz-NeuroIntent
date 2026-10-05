@@ -1,6 +1,7 @@
 // Import hooks and axios for delete request
 import { useState } from 'react'
 import axios from 'axios'
+import { analyzeRecording, describeError } from './analyze'
 
 // Read backend URL from environment variable
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
@@ -12,9 +13,34 @@ const CONFIDENCE_COLORS = {
     high: 'bg-green-900 text-green-300 border-green-700'
 }
 
-function ReportScreen({ recordings, results }) {
+function ReportScreen({ recordings, results: initialResults, errors: initialErrors = [] }) {
     // Tracks which answer card is expanded
     const [expandedIndex, setExpandedIndex] = useState(0)
+
+    // Local copies so a failed answer can be retried from here without leaving the report
+    const [results, setResults] = useState(initialResults)
+    const [errors, setErrors] = useState(initialErrors)
+    // Indices currently being retried
+    const [retrying, setRetrying] = useState([])
+
+    // Re-send one failed answer to the backend
+    const retryAnswer = async (i) => {
+        setRetrying(prev => [...prev, i])
+        try {
+            const data = await analyzeRecording(recordings[i], i)
+            setResults(prev => prev.map((r, j) => (j === i ? data : r)))
+            setErrors(prev => prev.map((e, j) => (j === i ? null : e)))
+            setExpandedIndex(i)
+        } catch (err) {
+            setErrors(prev => {
+                const updated = [...prev]
+                updated[i] = describeError(err)
+                return updated
+            })
+        } finally {
+            setRetrying(prev => prev.filter(j => j !== i))
+        }
+    }
 
     // Handles delete data button — sends DELETE to backend
     const handleDeleteData = async () => {
@@ -59,7 +85,35 @@ function ReportScreen({ recordings, results }) {
             <div className="max-w-2xl mx-auto space-y-4">
                 {recordings.map((rec, i) => {
                     const result = results[i]
-                    if (!result) return null
+                    if (!result) {
+                        // Analysis failed for this answer — say so instead of showing anything invented
+                        return (
+                            <div
+                                key={i}
+                                className="bg-gray-900 border border-red-800 rounded-2xl p-5"
+                            >
+                                <p className="text-gray-400 text-xs mb-0.5">Answer {i + 1}</p>
+                                <p className="text-white text-sm font-medium leading-snug mb-2">
+                                    {rec.question}
+                                </p>
+                                <p className="text-red-400 text-xs">
+                                    This answer could not be analysed, so there is no score for it.
+                                </p>
+                                {errors[i] && (
+                                    <p className="text-red-300 text-xs mt-1 break-words">
+                                        Reason: {errors[i]}
+                                    </p>
+                                )}
+                                <button
+                                    onClick={() => retryAnswer(i)}
+                                    disabled={retrying.includes(i)}
+                                    className="mt-3 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg text-xs font-semibold transition-colors"
+                                >
+                                    {retrying.includes(i) ? 'Retrying...' : 'Retry this answer'}
+                                </button>
+                            </div>
+                        )
+                    }
                     const isExpanded = expandedIndex === i
 
                     return (
