@@ -1,16 +1,19 @@
-# React + Vite
+# Evaluator portal
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+**Status: prototype, not connected.** Intended for neurotypical evaluators to label clips; part of the future gap-data collection.
 
-Currently, two official plugins are available:
+- Login is a password compared in the page code (`src/LoginScreen.jsx`) — not real authentication.
+- Clips are placeholders (no audio source), and submitted labels are posted as JSON to `/score`, which expects an audio upload, so the request fails and nothing is saved.
+- It is out of scope for the current milestone. See `PROJECT_STATUS.md`.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Setup
 
-## React Compiler
+```bash
+npm install
+npm run dev      # development server (Vite)
+npm run build    # production build check
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+The app reads `VITE_BACKEND_URL` from a `.env` file at the **repository root** (git-ignored; no `.env.example` yet). If it is unset the app uses `http://localhost:8000`. A `VITE_BACKEND_URL` set in the shell overrides the file.
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Project overview and status: [`../../../PROJECT_STATUS.md`](../../../PROJECT_STATUS.md).

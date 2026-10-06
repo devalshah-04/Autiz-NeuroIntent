@@ -45,21 +45,23 @@ section carries a **Status** line saying what exists. The living, dated record i
 
 ## v2 design (current milestone)
 
-C is the 256-dim output of `ContentBranch` — the layer just before the final score in the content
-scorer. Chain: RoBERTa-large CLS (1024) → `ContentBranch` (256 = **C**) → `content_head` `Linear(256, 1)`
-= content score. C is frozen after Stage 1 (trained on ChaLearn First Impressions V2 transcripts).
-Stage 2 trains `ProsodyBranch` (62 z-scored GeMAPS → 256 = **D**) with:
+**Stage 1 — content scorer (C).** Frozen RoBERTa-large (no fine-tuning) turns each transcript into a 1,024-number CLS embedding, computed once per text set and cached as `.npy`. Only `ContentBranch` (1024 → 256 = **C**) and `content_head` (`Linear(256, 1)`) are trained, on the 6,000 ChaLearn training transcripts against the `interview` label only, with weight decay and early stopping. The split is by **YouTube video id** (80/20, fixed seed, zero id overlap asserted), never by clip; early stopping uses a further 10 % of the training-side videos, so the reported Pearson r on the 20 % held-out videos is untouched. C is frozen afterwards. If `CONTENT_LABEL_SOURCE = "proxy"`, Stage 1 is skipped and every output is stamped "PROXY, not a trained scorer".
 
-- a **reconstruction loss** — a small `recon_head` must rebuild the z-scored GeMAPS input from D, so D keeps real delivery information;
-- a **batch-level independence penalty** between D and the frozen C, replacing the cosine penalty of section 2.2.
+**Stage 2 — delivery representation (D).** `ProsodyBranch` (62 z-scored GeMAPS → 256 = **D**) is trained with (i) reconstruction MSE of the 62 z-scored features from D through a `recon_head`, plus (ii) a **batch-level independence penalty** between D and the frozen C: the mean squared cross-correlation of their dimensions (distance correlation is available as an alternative). C for a synthetic pair comes from the pair's ground-truth LibriSpeech transcript. A weight λ on the penalty is swept over {0, 0.1, 1, 10, 100}; λ = 0 is a no-penalty ablation and is never selected. Removed from v1: the wrong-sign prosody loss `-cosine(D_orig, D_flat)`, the always-zero content-MSE term, and the intent head with its labels.
 
-Independence is *tested*, not assumed: distance correlation (bias-corrected, with a permutation test) and
-cross-validated ridge R² predicting D from C and C from D. A content path that is blind to audio makes the
-content score invariant to delivery **by construction**, so those invariance numbers are not evidence of
-training success; the independence tests and the evaluation on real held-out speakers are.
-Serving checkpoint: `models/checkpoints/autiz_v2.pt` (`content_branch`, `content_head`,
-`prosody_branch`, `recon_head`, `config`); the GeMAPS z-score scaler is fit on original LibriSpeech
-clips of the training split only (`models/checkpoints/gemaps_scaler.json`).
+**Data and splits.** 500 synthetic pairs (original + pitch-flattened, 15 % slower copy) are regenerated from LibriSpeech test-clean, split by **speaker** 80/20 (a further 20 % of the training speakers is the validation set used for λ selection and early stopping). The GeMAPS scaler is fit on original clips of the training split only and saved to `gemaps_scaler.json`.
+
+**Independence tests (held-out speakers).** Bias-corrected distance correlation between C and D, and grouped cross-validated ridge R² in both directions (C → D and D → C). Each is compared with a baseline made by shuffling the C–D pairing 200 times, and the notebook reports where the real value falls among the 200. Plain-language fields in `eval_results_independence.json` explain each number.
+
+**Prosody-only baseline.** Ridge regression from the z-scored features to a hand-built arousal proxy; labelled "illustrative comparison model, not an evaluator or vendor tool". Synthetic evaluation compares its gap between original and flattened copies with our content gap, which is **zero by construction** (stated in the JSON).
+
+**Real speakers (355 clips, 8 folds).** Each clip is transcribed with faster-whisper (`base`, same as `src/api/pipeline.py`), embedded with frozen RoBERTa and passed through the frozen `ContentBranch`; the content path never trains on real clips. With `LOSO_RETRAIN=True` the `ProsodyBranch` is retrained per held-out speaker on LibriSpeech-train plus the other 7 speakers. Per fold: clip count, prosody distance (z-scored against the LibriSpeech scaler) and within-speaker variance; independence metrics only for folds with at least 10 clips (S007 has 3 and is reported as null, "n < 10"). A **pooled out-of-fold** test collects (C, D) for all clips, each D from the model that did not train on that clip's speaker. Aggregates are given unweighted (mean, std across folds) and clip-weighted, because S001 and S008 make up 62 % of the clips.
+
+**SHAP** explains the prosody-only baseline only. If SHAP fails, a labelled coefficient-magnitude proxy is recorded instead and is never called SHAP.
+
+The model code lives in `src/api/autiz_model.py` (single source of truth); the notebook holds an identical copy in a cell marked `KEEP IN SYNC`.
+
+Serving checkpoint: `models/checkpoints/autiz_v2.pt` is a dict with keys `content_branch`, `content_head`, `prosody_branch`, `recon_head` (training only) and `config`; the z-score scaler is `models/checkpoints/gemaps_scaler.json` (mean, std and a ±10 clip). A content path that is blind to audio makes the content score invariant to delivery **by construction**, so that invariance is not evidence of training success; the independence tests and the real held-out-speaker evaluation are.
 
 ---
 

@@ -1,6 +1,6 @@
 # Autiz (NeuroIntent) — Project Status
 
-_This is the single living status document. Last updated: 2026-10-05, after Phase 0._
+_This is the single living status document. Last updated: 2026-10-06, Phase 0 committed (`62910a9`), Phase 1 in progress._
 _Everything below was checked against the repository on that date. Items that could not be checked from
 the repository are listed in [section 8](#8-known-limitations) or marked **unverified**. Results from the
 v2 training run do not exist yet and are deliberately absent._
@@ -74,12 +74,30 @@ A "100 % gap reduction" on synthetic pairs would therefore prove nothing. The in
 2. **Does D still carry real delivery information** (reconstruction quality, ability to tell original from flattened clips)?
 3. **The real-speaker (LOSO) evaluation**, which uses real recordings the model was never trained on.
 
+### Exact v2 design (as written in `notebooks/autiz_v2.ipynb`; not yet run)
+
+**Stage 1 — content scorer (C).** Frozen RoBERTa-large (no fine-tuning) turns each transcript into a 1,024-number CLS embedding, computed once per text set and cached as `.npy`. Only `ContentBranch` (1024 → 256 = **C**) and `content_head` (`Linear(256, 1)`) are trained, on the 6,000 ChaLearn training transcripts against the `interview` label only, with weight decay and early stopping. The split is by **YouTube video id** (80/20, fixed seed, zero id overlap asserted), never by clip; early stopping uses a further 10 % of the training-side videos, so the reported Pearson r on the 20 % held-out videos is untouched. C is frozen afterwards. If `CONTENT_LABEL_SOURCE = "proxy"`, Stage 1 is skipped and every output is stamped "PROXY, not a trained scorer".
+
+**Stage 2 — delivery representation (D).** `ProsodyBranch` (62 z-scored GeMAPS → 256 = **D**) is trained with (i) reconstruction MSE of the 62 z-scored features from D through a `recon_head`, plus (ii) a **batch-level independence penalty** between D and the frozen C: the mean squared cross-correlation of their dimensions (distance correlation is available as an alternative). C for a synthetic pair comes from the pair's ground-truth LibriSpeech transcript. A weight λ on the penalty is swept over {0, 0.1, 1, 10, 100}; λ = 0 is a no-penalty ablation and is never selected. Removed from v1: the wrong-sign prosody loss `-cosine(D_orig, D_flat)`, the always-zero content-MSE term, and the intent head with its labels.
+
+**Data and splits.** 500 synthetic pairs (original + pitch-flattened, 15 % slower copy) are regenerated from LibriSpeech test-clean, split by **speaker** 80/20 (a further 20 % of the training speakers is the validation set used for λ selection and early stopping). The GeMAPS scaler is fit on original clips of the training split only and saved to `gemaps_scaler.json`.
+
+**Independence tests (held-out speakers).** Bias-corrected distance correlation between C and D, and grouped cross-validated ridge R² in both directions (C → D and D → C). Each is compared with a baseline made by shuffling the C–D pairing 200 times, and the notebook reports where the real value falls among the 200. Plain-language fields in `eval_results_independence.json` explain each number.
+
+**Prosody-only baseline.** Ridge regression from the z-scored features to a hand-built arousal proxy; labelled "illustrative comparison model, not an evaluator or vendor tool". Synthetic evaluation compares its gap between original and flattened copies with our content gap, which is **zero by construction** (stated in the JSON).
+
+**Real speakers (355 clips, 8 folds).** Each clip is transcribed with faster-whisper (`base`, same as `src/api/pipeline.py`), embedded with frozen RoBERTa and passed through the frozen `ContentBranch`; the content path never trains on real clips. With `LOSO_RETRAIN=True` the `ProsodyBranch` is retrained per held-out speaker on LibriSpeech-train plus the other 7 speakers. Per fold: clip count, prosody distance (z-scored against the LibriSpeech scaler) and within-speaker variance; independence metrics only for folds with at least 10 clips (S007 has 3 and is reported as null, "n < 10"). A **pooled out-of-fold** test collects (C, D) for all clips, each D from the model that did not train on that clip's speaker. Aggregates are given unweighted (mean, std across folds) and clip-weighted, because S001 and S008 make up 62 % of the clips.
+
+**SHAP** explains the prosody-only baseline only. If SHAP fails, a labelled coefficient-magnitude proxy is recorded instead and is never called SHAP.
+
+The model code lives in `src/api/autiz_model.py` (single source of truth); the notebook holds an identical copy in a cell marked `KEEP IN SYNC`.
+
 ## 5. Phase checklist
 
 | Phase | What | Exit criteria | Status | Updated |
 |---|---|---|---|---|
-| 0 | Docs baseline, remove fake-result fallback, CORS, small API/frontend fixes | Docs match the repo; no random scores anywhere in the rehearsal app; `npm run build` passes for all three apps | **Done**, except untracking `src/api/test.wav` (needs the maintainer to run `git rm --cached src/api/test.wav`) | 2026-10-05 |
-| 1 | Notebook v2 edits (not executed) | `notebooks/autiz_v2.ipynb` and `src/api/autiz_model.py` written; code paths checked on fabricated data | Not started | — |
+| 0 | Docs baseline, remove fake-result fallback, CORS, small API/frontend fixes | Docs match the repo; no random scores anywhere in the rehearsal app; `npm run build` passes for all three apps | **Done** — committed as `62910a9`; `src/api/test.wav` is untracked (the file stays on disk and is git-ignored) | 2026-10-06 |
+| 1 | Notebook v2 edits (not executed) | `notebooks/autiz_v2.ipynb` and `src/api/autiz_model.py` written; JSON valid and every code cell parses; statistics and loaders checked on fake data; nothing executed on Kaggle | **In progress** — notebook written, awaiting review before Phase 2 | 2026-10-06 |
 | 2 | Run the notebook once on Kaggle; ingest and validate artifacts | All artifacts present and validated; real numbers in these docs | Not started | — |
 | 3 | WER spot check; Vaani prosody add-on (optional) | WER reported with sample size; add-on optional | Not started | — |
 | 4 | Backend serves v2 | Loads `autiz_v2.pt`; honest response schema; tests pass; temp-file cleanup in `finally`; `/stream` disabled | Not started | — |
@@ -103,7 +121,8 @@ Checked 2026-10-05 by reading the code (tests were not run).
 | `POST /stream` (WebSocket) | **Stub** | Still imports `mock_pipeline.py`, which returns constants; also loads a speech-detector model at import time (network call). |
 | `run_llama_reasoning` in `modal_app.py` | **Stub** | Returns a hardcoded dict; never called. |
 | v1 checkpoint (`fusion_layer_trained_v1.pt`) | Exists | Trained with a loss that does not give orthogonal vectors (commit `2f15a3d`, notebook comments). Not re-loaded for this document. |
-| `notebooks/training_v1.ipynb` | Exists, partly stale | Saved output shows 100 pairs and cos(C,D) ≈ −0.999; the code afterwards was edited to 500 pairs and the corrected loss but those cells were never re-run. Cells after training have no saved output. |
+| `notebooks/autiz_v2.ipynb` | Written, **never executed** | Replaces `training_v1.ipynb` (renamed with `git mv`; the v1 version, with its stale outputs, stays in git history). No saved outputs. First run is Phase 2. |
+| `src/api/autiz_model.py` | New, not yet used by the backend | Model classes for v2; `pipeline.py` still loads v1 until Phase 4. |
 | Rehearsal app | Real after Phase 0 | Failures show errors and a retry button; never invented scores. Still has the self-label step and a "Delete my data" button that does not delete anything (fixed in Phase 5). |
 | Evaluator app | Prototype | Posts JSON to `/score`, which expects an audio upload; clip audio is `null`; password hardcoded in the page code. |
 | Overlay app | Prototype | Never sends audio to `/stream`. |
@@ -119,9 +138,9 @@ Access status for requests is **as written in the original README and unverified
 
 | Dataset | Role | Status |
 |---|---|---|
-| LibriSpeech test-clean | Source of clean speech; used to make **synthetic pairs** (the same clip with pitch flattened and slowed using Praat/parselmouth) | **Used** (public, downloaded inside the notebook) |
-| Real clips, speakers S001–S008 (355 clips) | Real-speaker evaluation | **Used** via a Kaggle dataset `autiz-real-asd-clips` (not in this repo). Per the project lead the speakers are from YouTube. Provenance and licensing are not documented here. |
-| ChaLearn First Impressions V2 | Training the content scorer (transcripts + human-impression labels) | **Next.** Availability of transcripts, file layout and licence **unverified**. |
+| LibriSpeech test-clean | Source of clean speech; used to make **synthetic pairs** (the same clip with pitch flattened and slowed using Praat/parselmouth); its `*.trans.txt` ground-truth transcripts supply the pair transcripts | **Used.** Taken from `<chalearn dataset>/LibriSpeech/test-clean` if present, otherwise downloaded. |
+| Real clips, speakers S001–S008 (355 clips) | Real-speaker evaluation | **Used** via the private Kaggle dataset `autiz-real-asd-clips` (not in this repo). Layout verified by the project lead on Kaggle: `wav/S001 … wav/S008`, `.wav` only; counts S001 110, S002 22, S003 39, S004 35, S005 15, S006 21, S007 3, S008 110. S001 and S008 are 62 % of the clips and S007 has 3, so the folds are very uneven. Per the project lead the speakers are from YouTube; provenance and licensing are not documented here. |
+| ChaLearn First Impressions V2 | Training the content scorer (transcripts + human-impression labels) | **Used in Stage 1** via the private Kaggle dataset `autiz-chalearn-fi-v2`. Facts verified by the project lead on Kaggle (not re-checked from this repo): only `train-annotation/annotation_training.pkl` (dict of dicts with keys extraversion, neuroticism, agreeableness, conscientiousness, interview, openness; each maps a clip name such as `J4GQm9j0JZ0.003.mp4` to a float in [0, 1]; 6,000 entries) and `train-transcription/transcription_training.pkl` (the same 6,000 names → transcript) are used, and only `interview` is the label. The YouTube video id is the part of the name before the first dot; several clips share a video id, so splits are by video id. The dataset also holds stale folders from an earlier notebook (`LibriSpeech/`, `test-clean/LibriSpeech/`, `synthetic_pairs/`, `test_clip*.wav`, `__huggingface_repos__.json`); `synthetic_pairs/` came from the flawed v1 pipeline and is ignored, all 500 pairs are regenerated. Licence not documented here. |
 | Vaani | Optional prosody add-on | **Next (optional)**, not started |
 | Mozilla Common Voice, MSP-Podcast, MuSe, CMU-MOSI/MOSEI, IEMOCAP, SEMAINE | Original plan | **Parked** (README lists access requests for MSP-Podcast and IEMOCAP as submitted) |
 | NDAR (NIH) | Adult ASD speech | **Parked** (README: application submitted); out of scope |
@@ -136,6 +155,25 @@ Access status for requests is **as written in the original README and unverified
 - The content score is blind to audio by construction (section 4), so its invariance is not evidence of training success.
 - The v1 model and its numbers should not be cited as results.
 - Backend is deployed on a third party's Modal account; its CORS behaviour and weights-download behaviour are **unverified**.
+
+### Assumptions made while writing the v2 notebook (unverified until the Phase 2 run)
+
+The first one was flagged by the project lead; the rest are mine and are listed so they can be challenged.
+
+1. **RoBERTa-large is a frozen feature extractor** in this milestone (no fine-tuning); CLS embeddings are precomputed once and cached. *(Flagged open assumption.)*
+2. Stage 1 early stopping uses an extra early-stopping split (10 % of the training-side videos) inside the 80 % train side, so the reported r on the 20 % held-out videos is not used for model selection. Hyperparameters (AdamW, lr 1e-3, weight decay 1e-2, batch 128, patience 20, MSE, raw un-normalised CLS input) are untuned defaults.
+3. Synthetic speakers are split 80/20, and 20 % of the training speakers form a validation set for λ selection and early stopping. "Training split" for the scaler, baseline and LOSO retraining means train + validation speakers (the 80 %). The selection score `(1 − validation reconstruction R²) + validation distance correlation` is my own arbitrary choice.
+4. The scaler also clips z-scores at ±10 (stored in `gemaps_scaler.json` as `z_clip`) and floors tiny standard deviations at 1; decision 4 only specified mean and std. **The backend must apply the same clip in Phase 4.**
+5. LibriSpeech ground-truth transcripts are lower-cased then sentence-cased; ChaLearn transcripts are used as they are and real-clip transcripts are raw Whisper output, so the three text sources differ in style. Candidate LibriSpeech clips are shorter than 10 s and shuffled with the fixed seed; failed renders are replaced so exactly 500 pairs exist.
+6. Real clips are always converted to 16 kHz mono with ffmpeg before feature extraction and transcription, even though they are `.wav`. Whisper `base`, float16, beam size 3 is hard-coded to match `src/api/pipeline.py` (not imported).
+7. Real clips with an empty transcript are excluded from evaluation and counted per speaker in the JSON.
+8. Independence is tested separately for original and flattened synthetic clips (they share the same C). "Verified" means all six permutation p-values are at least 0.05; failing to detect a link is not proof of independence.
+9. Per-fold ridge uses train-to-held-out transfer (a single speaker cannot be grouped). The pooled out-of-fold test mixes D from eight separately trained models (same initial seed, similar but not identical spaces), which can bias pooled ridge R² towards zero; this is stated in the JSON.
+10. LOSO folds train for a fixed `max(10, main best epoch)` epochs because there is no validation set inside a fold.
+11. The arousal proxy for the baseline is the mean of three z-scored GeMAPS features (pitch variability, loudness, voiced segments per second), so a ridge on all 62 features recovers it easily; SHAP on it is an illustration only.
+12. Extra output `eval_results_content.json` (Stage 1 metrics) is not in the original artifact list. `transcripts_real.csv` contains speech content of real speakers and must **not** be committed; clip ids are anonymised (`speaker_01_clip_000`, in sorted-filename order).
+13. The preflight requires the ChaLearn dataset even if `CONTENT_LABEL_SOURCE = "proxy"`; the proxy mode keeps a randomly initialised, frozen ContentBranch and stamps outputs. It also fails if any per-speaker clip count differs from the numbers above.
+14. The ChaLearn pickles are loaded with `pickle`, which is only safe for trusted files (these are your private dataset).
 
 ## 9. How to run and reproduce
 
@@ -161,7 +199,7 @@ They read `VITE_BACKEND_URL` from a `.env` file at the **repository root** (git-
 
 **Backend tests.** `pytest` from `src/api/` — currently loads real models and needs network access (fixed in Phase 4).
 
-**Training.** Only the v1 notebook exists (`notebooks/training_v1.ipynb`, run on Kaggle with a T4 GPU). Reproduction steps for v2 will be written in Phase 7.
+**Training.** `notebooks/autiz_v2.ipynb` is written but has not been run. It is meant to run once, top to bottom, on a Kaggle GPU (Internet on) with the two private datasets attached; its first cells are a preflight and a self-test that stop the run early if anything is wrong. Full reproduction steps will be written in Phase 7.
 
 **Testing the error state in the rehearsal app.** Point the app at a backend that is not running, then record and submit answers:
 ```bash

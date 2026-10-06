@@ -125,8 +125,8 @@ Not built (future work): intent classification, Llama 3 LoRA reasoning, HuBERT S
 
 | Phase | What | Status |
 |---|---|---|
-| 0 | Docs baseline, remove fake-result fallback, CORS, small fixes | Done (except untracking `src/api/test.wav`) |
-| 1 | Notebook v2 edits (not executed) | Not started |
+| 0 | Docs baseline, remove fake-result fallback, CORS, small fixes | Done (commit `62910a9`) |
+| 1 | Notebook v2 edits (not executed) | In progress (notebook written, not yet run) |
 | 2 | Run notebook on Kaggle; ingest and validate artifacts | Not started |
 | 3 | WER spot check; Vaani prosody add-on (optional) | Not started |
 | 4 | Backend serves v2 | Not started |
