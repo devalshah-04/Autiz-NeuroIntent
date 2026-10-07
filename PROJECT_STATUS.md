@@ -1,6 +1,6 @@
 # Autiz (NeuroIntent) — Project Status
 
-_This is the single living status document. Last updated: 2026-10-06, Phase 0 committed (`62910a9`), Phase 1 in progress._
+_This is the single living status document. Last updated: 2026-10-07. Phase 1, 1b and 1c done; smoke run passed at commit `887a06a`; Phase 4 in progress (backend code only; the full Kaggle run, Phase 2, is still pending)._
 _Everything below was checked against the repository on that date. Items that could not be checked from
 the repository are listed in [section 8](#8-known-limitations) or marked **unverified**. Results from the
 v2 training run do not exist yet and are deliberately absent._
@@ -97,42 +97,128 @@ The model code lives in `src/api/autiz_model.py` (single source of truth); the n
 | Phase | What | Exit criteria | Status | Updated |
 |---|---|---|---|---|
 | 0 | Docs baseline, remove fake-result fallback, CORS, small API/frontend fixes | Docs match the repo; no random scores anywhere in the rehearsal app; `npm run build` passes for all three apps | **Done** — committed as `62910a9`; `src/api/test.wav` is untracked (the file stays on disk and is git-ignored) | 2026-10-06 |
-| 1 | Notebook v2 edits (not executed) | `notebooks/autiz_v2.ipynb` and `src/api/autiz_model.py` written; JSON valid and every code cell parses; statistics and loaders checked on fake data; nothing executed on Kaggle | **In progress** — notebook written, awaiting review before Phase 2 | 2026-10-06 |
-| 1b | Notebook smoke mode and static review (not executed) | `SMOKE = True` runs every code path cheaply (20 pairs, ~300 ChaLearn clips from ≥100 videos, 3 real clips per speaker, 2 epochs, 2 λ values, 5 permutations, all 8 LOSO folds, real Whisper and RoBERTa) and writes only to `/kaggle/working/smoke_outputs/`, every file stamped "SMOKE RUN, NOT RESULTS"; `SMOKE = False` behaves as before; static review findings fixed; JSON, `ast.parse` and pyflakes re-checked | **Done** — smoke run on Kaggle hit Whisper/PyAV incompatibility in cell 34 | 2026-10-07 |
-| 1c | Fix Whisper/PyAV incompatibility and re-validate notebook | Cell 2 adds `pip install --upgrade 'av>=11.0'` after faster-whisper install; JSON and `ast.parse` validation re-run | **In progress** | 2026-10-07 |
+| 1 | Notebook v2 edits | `notebooks/autiz_v2.ipynb` and `src/api/autiz_model.py` written; JSON valid and every code cell parses; statistics and loaders checked on fake data | **Done** (commit `e33a1df`) | 2026-10-07 |
+| 1b | Notebook smoke mode and static review | `SMOKE = True` runs every code path cheaply (20 pairs, ~300 ChaLearn clips from ≥100 videos, 3 real clips per speaker, 2 epochs, 2 λ values, 5 permutations, all 8 LOSO folds, real Whisper and RoBERTa) and writes only to `/kaggle/working/smoke_outputs/`, every file stamped "SMOKE RUN, NOT RESULTS"; `SMOKE = False` behaves as before | **Done** (commit `887a06a`); the first smoke run hit the Whisper/PyAV problem (issue 11) | 2026-10-07 |
+| 1c | Fix Whisper/PyAV incompatibility and re-validate | Cell 2 monkeypatches `av.open` to ignore `metadata_errors` (an upgrade of `av` was not possible on Kaggle); smoke run passes | **Done** (commit `45862cc`); smoke run passed on tiny data. The full run is still pending (Phase 2) | 2026-10-07 |
 | 2 | Run the notebook once on Kaggle; ingest and validate artifacts | All artifacts present and validated; real numbers in these docs | Not started | — |
 | 3 | WER spot check; Vaani prosody add-on (optional) | WER reported with sample size; add-on optional | Not started | — |
-| 4 | Backend serves v2 | Loads `autiz_v2.pt`; honest response schema; tests pass; temp-file cleanup in `finally`; `/stream` disabled | Not started | — |
+| 4 | Backend serves v2 | Loads `autiz_v2.pt`, `gemaps_scaler.json`, `prosody_baseline.joblib` (lazily, with clear errors; smoke-stamped artifacts refused unless `ALLOW_SMOKE_ARTIFACTS=1`); honest response schema (section 6a); tests pass offline without the checkpoint; temp-file cleanup in `finally`; `/stream` removed; no storage | **In progress** — code and tests written; not run against a real checkpoint (none exists yet). Real smoke checkpoint test waits for files in `models/smoke/` | 2026-10-07 |
 | 5 | Rehearsal frontend end to end | Real error states; contract matches backend; placeholder delete/label UI removed; evaluator and overlay labelled prototype | Not started | — |
 | 6 | Modal redeploy and live test | One account; unified `.env`; end-to-end run recorded; demo script | Not started | — |
 | 7 | Final docs | Results, limitations, future work, reproduction steps | Not started | — |
 
 ## 6. What is real vs stub today
 
-Checked 2026-10-05 by reading the code (tests were not run).
+Backend rows re-checked 2026-10-07 (Phase 4) by reading the code and running the backend tests; other rows were checked 2026-10-05 by reading the code.
 
 | Part | Real or stub | Detail |
 |---|---|---|
-| `POST /analyze`, `POST /score` | Real inference, with weak parts | Run Whisper **base**, openSMILE GeMAPS, RoBERTa, and the **v1** fusion checkpoint. |
-| Content score in responses | **Proxy, not a trained scorer** | `pipeline.py` uses the RoBERTa CLS vector's length divided by 40. |
-| `score_without_system` | **Invented formula** | Content score times a fixed penalty (0.35 or 0.12). Not measured from any evaluator. |
-| `interpretation` text | **Template string** | Not model output. |
-| `intent_label` | **Meaningless** | The v1 model was never trained with intent labels, so its classifier head is untrained. |
-| `audit_trail` | **Proxy** | Size of vectors, not SHAP (an explanation method for model outputs). |
-| `mode` | **No effect** | The field is read as a URL query parameter, not from the form body, and `pipeline.run` ignores it. |
-| `POST /stream` (WebSocket) | **Stub** | Still imports `mock_pipeline.py`, which returns constants; also loads a speech-detector model at import time (network call). |
+| `POST /analyze`, `POST /score` | Real code, **never run against a trained checkpoint** | Whisper **base**, openSMILE GeMAPS, RoBERTa-large, then the v2 content head and the prosody-only baseline from `models/checkpoints/` (or `AUTIZ_MODELS_DIR`). The checkpoint does not exist until Phase 2, so until then these endpoints return 503 (tested). Tested with stubbed encoders and small fixture checkpoints only. Response: section 6a. |
+| Content score in responses | From the trained content head once a checkpoint exists | `content_score` (clipped to 0..1) and `content_score_raw`; labelled `"proxy"` with the stamp "PROXY, not a trained scorer" if the checkpoint says Stage 1 was skipped. The old CLS-length formula is gone. |
+| `score_without_system` | **Removed** | Was an invented formula (fixed penalty 0.35 or 0.12). |
+| `interpretation` text | **Template string** | Not model output; the response says so (`interpretation_source: "template"`). |
+| `intent_label` | **Always `null`** | No intent labels exist; `intent_status` is `"not_trained"`. The v1 classifier was removed. |
+| `explanation` (was `audit_trail`) | **Labelled proxy** | Coefficient × z-score of the prosody-only baseline; explains the baseline only. SHAP is computed offline in the notebook, not per request. |
+| `mode` | **No effect** | Now a required form field, echoed back with `mode_effect: "none in this milestone"`; `pipeline.run` ignores it. |
+| `POST /stream` (WebSocket) | **Removed** | Phase 4 deleted the router and its import-time `torch.hub` download. The overlay app has nothing to connect to. |
 | `run_llama_reasoning` in `modal_app.py` | **Stub** | Returns a hardcoded dict; never called. |
-| v1 checkpoint (`fusion_layer_trained_v1.pt`) | Exists | Trained with a loss that does not give orthogonal vectors (commit `2f15a3d`, notebook comments). Not re-loaded for this document. |
+| v1 checkpoint (`fusion_layer_trained_v1.pt`) | Exists, **no longer loaded** | Trained with a loss that does not give orthogonal vectors (commit `2f15a3d`, notebook comments). The backend does not use it. |
 | `notebooks/autiz_v2.ipynb` | Written, **never executed** | Replaces `training_v1.ipynb` (renamed with `git mv`; the v1 version, with its stale outputs, stays in git history). No saved outputs. First run is Phase 2. |
-| `src/api/autiz_model.py` | New, not yet used by the backend | Model classes for v2; `pipeline.py` still loads v1 until Phase 4. |
+| `src/api/autiz_model.py` | Used by the backend (Phase 4) | `pipeline.py` imports `load_autiz_v2`, `load_scaler`, `apply_scaler` from it; the shared block was not edited. |
 | Rehearsal app | Real after Phase 0 | Failures show errors and a retry button; never invented scores. Still has the self-label step and a "Delete my data" button that does not delete anything (fixed in Phase 5). |
 | Evaluator app | Prototype | Posts JSON to `/score`, which expects an audio upload; clip audio is `null`; password hardcoded in the page code. |
 | Overlay app | Prototype | Never sends audio to `/stream`. |
 | `mock-server.js` | Dev mock | Random values; labelled. |
 | `scripts/Preprocessing_Pipeline.py` | Skeleton | Every functional part raises `NotImplementedError`; nothing uses it. |
 | `src/layer1`, `layer2`, `layer3`, `models/adapters`, `data`, `tests` (repo root) | Empty directories | |
-| Backend tests (`src/api/tests/test_api.py`) | 8 tests, **not run** | They call the real pipeline, so they would load large models. |
+| Backend tests (`src/api/tests/`) | Offline; see the Phase 4 result in the report | `pipeline.run` is stubbed (no RoBERTa/Whisper); artifact tests build tiny checkpoints inside the test and are skipped when torch is missing. The test with a real smoke checkpoint is skipped until files are placed in `models/smoke/`. `mock_pipeline.py` now lives in `src/api/tests/` as a stub. |
 | CORS | Added in Phase 0 | `src/api/main.py`; origins from `CORS_ALLOWED_ORIGINS` (default: the three local Vite dev ports). |
+
+## 6a. API contract (Phase 4)
+
+The backend stores nothing: no database, no stored audio, no persisted labels. Uploaded audio is written to a
+temporary file with a generated name and deleted in a `finally` block whether the request succeeds or fails.
+There is no delete endpoint because there is nothing to delete.
+
+The machine-readable copy is the Pydantic models in `src/api/schemas.py`; a real-shaped example is
+`docs/api_example_response.json`.
+
+**Configuration (environment variables).**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AUTIZ_MODELS_DIR` | `models/checkpoints` (or `/root/models/checkpoints` on Modal) | Folder holding `autiz_v2.pt`, `gemaps_scaler.json`, `prosody_baseline.joblib` |
+| `AUTIZ_RESULTS_DIR` | `src/eval/results` | Folder holding `eval_results_independence.json` (read only by `GET /about`) |
+| `ALLOW_SMOKE_ARTIFACTS` | unset | Set to `1` to allow loading files stamped "SMOKE RUN, NOT RESULTS". Without it the backend refuses them |
+| `CORS_ALLOWED_ORIGINS` | the three local Vite ports | Comma-separated browser origins |
+
+**Smoke stamp (as the notebook writes it).** Every JSON (including `gemaps_scaler.json`) has a top-level key
+`run_stamp`; the checkpoint has `config["run_stamp"]`; the joblib file is a dict with a `run_stamp` key; CSV files
+start with the line `# SMOKE RUN, NOT RESULTS`. The value is `"SMOKE RUN, NOT RESULTS"`. Full-run files have no
+`run_stamp` key at all. The backend treats the whole artifact set as smoke if any file it loads carries a stamp.
+When smoke artifacts are allowed, every response carries `"smoke_artifacts": true`.
+
+### `POST /analyze` (multipart form)
+
+Form fields: `audio` (file, required) and `mode` (text, required: `universal_fairness` or `speaker_declared`;
+anything else is HTTP 400). `mode` is a form field, not a query parameter. There is **no** `audio_storage_consent`.
+
+| Field | Meaning in plain language |
+|---|---|
+| `content_score` | The content score, **clipped to the range 0 to 1**. Computed from the transcript only; the audio never enters it. |
+| `content_score_raw` | The same score **before clipping**. The scoring layer is an unbounded linear layer, so it can fall below 0 or above 1; this shows when clipping changed the number. |
+| `content_score_source` | `"trained_head"` when the content scorer was trained on ChaLearn labels; `"proxy"` when the checkpoint says Stage 1 was skipped. |
+| `content_scorer_stamp` | `null`, or the text `"PROXY, not a trained scorer"` copied from the checkpoint when `content_score_source` is `"proxy"`. |
+| `content_label_source` | Where the content scorer's training labels came from, as recorded in the checkpoint (`"chalearn"` or `"proxy"`). ChaLearn labels are human impressions of video, not ratings of answer quality. |
+| `intent_label` | Always `null`. No intent model exists. |
+| `intent_status` | Always `"not_trained"`. |
+| `prosody_only_baseline_score` | Output of a simple linear model that looks at the voice measurements only. It predicts a hand-built "arousal proxy" in standard-deviation units of the training data (it is not limited to 0 to 1). |
+| `prosody_only_baseline_label` | Always "illustrative comparison model, not an evaluator or vendor tool". It is not any real hiring system. |
+| `transcript` | What Whisper heard. If no speech is found the request fails with HTTP 422 instead of scoring an invented transcript. |
+| `acoustic_observations` | Measured values from the audio, no judgement: `pitch_variation_stddev_norm` (normalised pitch spread, unitless), `mean_unvoiced_segment_sec`, `voiced_segments_per_sec`. Any can be `null`. |
+| `delivery_pattern` | The same measured values written as short sentences. No thresholds or verdicts. |
+| `explanation` | Why the baseline gave its number: `method` is `"shap"` or `"proxy"` (always `"proxy"` today: coefficient × z-score, which for a linear model is the linear SHAP value relative to the training mean, but SHAP itself is not run per request); `explains` is `"prosody_only_baseline_score"` (the content score has **no** explanation); `top_features` lists the 5 features with the largest absolute contribution; `note` says this in words. |
+| `interpretation` | One short paragraph. |
+| `interpretation_source` | Always `"template"`: the paragraph is filled in from a template, it is not model output. |
+| `mode` | The `mode` you sent, echoed back. |
+| `mode_effect` | Always `"none in this milestone"`: both modes run the identical pipeline. |
+| `session` | `speaker_id` (random 12-character id made fresh for this request, not linked to a person), `system_stage` (`"research_pilot"`), `candidate_disclosure_required` (`true`). |
+| `smoke_artifacts` | `true` only when the loaded files are smoke files and `ALLOW_SMOKE_ARTIFACTS=1`; otherwise `false`. Smoke numbers mean nothing. |
+
+Removed from the old response (they were invented or meaningless): `score_without_system`, `score_with_system`,
+`content_quality_score`, `intent_confidence`, `confidence_bound`, `prosody_decoupling_applied`,
+`audit_trail` (including the per-request `decoupling_verified`), and `session.audio_storage_consent`.
+
+### `POST /score` (multipart form)
+
+Same form fields. `mode=speaker_declared` is refused with HTTP 403. Returns `content_score`, `content_score_raw`,
+`content_score_source`, `content_scorer_stamp`, `mode` (always `"universal_fairness"`), `mode_effect`, `system_stage`,
+`candidate_disclosure_required` and `smoke_artifacts`, with the meanings above.
+
+### `GET /about`
+
+Describes the model, not a request. Fields: `name`, `system_stage`, `stores_nothing` (`true`),
+`content_label_source` (from the independence results file; `null` when that file is absent),
+`content_label_note` (why ChaLearn labels are a weak proxy), `results_available`, `independence_results`
+(the contents of `eval_results_independence.json`, or `null`), `results_note` (why results are missing, if they are),
+`limitations` (list of plain sentences) and `smoke_artifacts`. A missing results file is **not** an error:
+`results_available` is `false`. A results file carrying the smoke stamp is treated like a missing file (with the
+reason in `results_note`) unless `ALLOW_SMOKE_ARTIFACTS=1`.
+
+### `GET /health`
+
+`status` (`"ok"`), `system_stage` and `smoke_artifacts`. Does not load any model.
+
+### Errors
+
+| Status | When |
+|---|---|
+| 400 | `mode` is not one of the two allowed values |
+| 403 | `/score` with `mode=speaker_declared` |
+| 422 | Missing form field, audio that cannot be decoded, or audio with no detectable speech |
+| 503 | A required artifact file is missing or unreadable, or the artifacts are smoke-stamped and `ALLOW_SMOKE_ARTIFACTS` is not `1` (the message says which) |
+
+`/stream` no longer exists; the live overlay is future work.
 
 ## 7. Datasets
 
@@ -158,11 +244,37 @@ Access status for requests is **as written in the original README and unverified
 - The v1 model and its numbers should not be cited as results.
 - Backend is deployed on a third party's Modal account; its CORS behaviour and weights-download behaviour are **unverified**.
 
-### Known Issues Log
+### Known issues
 
-| # | Phase | Issue | Where | Impact | Resolution |
+| ID | Phase found | What | Where | Impact | Status |
 |---|---|---|---|---|---|
-| 11 | 1b | Whisper/PyAV incompatibility | cell 34 (real-clip transcription) | `TypeError: open() got an unexpected keyword argument 'metadata_errors'` blocks smoke run | fixed in 1c: upgrade `av>=11.0` in cell 2 pip install |
+| 1 | 1 | Notebook torch cells untested until the Kaggle run | notebook cells 11-42 | Notebook cells 11-42 smoke-tested on Kaggle at commit 887a06a on tiny data; full run still pending | open (Phase 2) |
+| 2 | 1 | Pooled out-of-fold ridge R² mixes D from 8 separately trained models, which biases it toward 0 | notebook section J; `eval_results_loso.json` | Pooled independence number can look better than it is | open; read per-fold results alongside it in Phase 2 |
+| 3 | 1 | Independence is tested on LibriSpeech text and Whisper transcripts, while the content path was trained on ChaLearn text | notebook sections G and J | Independence may not carry over to the text the content scorer was trained on | open |
+| 4 | 1 | Serving must apply the scaler z-score clip and std floor | `src/api/pipeline.py` | Un-clipped features would not match training | fixed in Phase 4; verified by `test_serving_applies_the_scaler_z_clip` (a raw z of 1000 is clipped to 10 and the baseline score equals the clipped sum). The std floor is already baked into the saved std; serving uses the shared `apply_scaler` |
+| 5 | 1 | ChaLearn licence for redistributing trained weights is unverified | `models/checkpoints/autiz_v2.pt` (future) | Phase 6 ships weights to Modal; may not be allowed | open; check before Phase 6 |
+| 6 | 1 | RoBERTa frozen is an unverified assumption | notebook cell 20; assumption 1 | Fine-tuning might do better; the checkpoint config records `roberta_frozen: true` | open |
+| 7 | 1 | `transcripts_real.csv` must never be committed (speech of real people) | `src/eval/results/` | Privacy | workaround in Phase 4: `transcripts_real.csv` added to `.gitignore`; verified with `git check-ignore -v src/eval/results/transcripts_real.csv` |
+| 8 | 1 | The ChaLearn Kaggle dataset still holds ~918 MB of stale folders | Kaggle dataset `autiz-chalearn-fi-v2` | Wasted space only | open (optional cleanup) |
+| 9 | 0 | CORS only tested with stubbed routers; the retry UI is only built, not exercised in a browser | `src/api/main.py`; rehearsal app | A real browser may still hit a CORS or error-state problem | open; Phase 4 added a preflight test (`test_cors_preflight_allows_local_dev_origin`) but with a stubbed pipeline and no browser |
+| 10 | 0 | Pre-existing lint errors: unused `consentData` prop and unused `err` in the rehearsal app, and a `useEffect` dependency warning | `src/frontend/rehearsal` | Lint noise | open (Phase 5) |
+| 11 | 1b | Kaggle PyAV 19.0.1 lacks the `metadata_errors` argument in `av.open`, which faster-whisper passes | notebook cell 2 | Notebook monkeypatches it; the serving image may hit the same incompatibility | workaround (monkeypatch in cell 2; smoke run passed). Phase 6 must pin `av` and `faster-whisper` versions in the Modal image and test a cold start |
+| 12 | 1b | The per-fold independence branch (folds with at least 10 clips) never ran in smoke, because every smoke fold had 3 clips | notebook section J | First real execution is the full run | open (Phase 2) |
+| 13 | 1b | In smoke, `decoupling_verified` was True with only 4 test pairs | `eval_results_independence.json` | The boolean is not meaningful at small n | open; Phase 2 must judge from n, the permutation null and per-fold agreement. `/about` passes the boolean through from the file, so read it with the caveats in that file |
+| 14 | 1b | Smoke baseline R² was 0.967; the arousal proxy is the mean of 3 of the 62 features (assumption 11), so a ridge on all 62 recovers it trivially (circular) | notebook section H | The baseline R² says nothing about real arousal | open; Phase 2 to check the proxy definition. The API labels the baseline an illustrative comparison model |
+| 15 | 1c | Docs disagree on the code-cell count (28 vs 29) | `PHASE_1_HANDOFF.md`, `PHASE_1_SUMMARY.md`, notebook | Confusing | open; align with the notebook |
+| 16 | 4 | The DECISIONS block named in the Phase 4 prompt was not in the message or the repo | Phase 4 prompt | Decision 1 was taken from section 4 of this file (C is the ContentBranch output; checkpoint keys `content_branch`, `content_head`, `prosody_branch`, `recon_head`, `config`) | workaround; project lead to confirm no other decision changes serving |
+| 17 | 4 | Phase 6 must include `eval_results_independence.json` in the Modal image (or set `AUTIZ_RESULTS_DIR` to a copy) | `src/api/modal_app.py` | Modal ships only `src/api` and `models/`, so `/about` would report `results_available: false` | open (Phase 6) |
+| 18 | 4 | `.gitignore` had a corrupted last line (UTF-16 bytes from a shell append), so `models/smoke/` was not actually ignored | `.gitignore` | Smoke artifacts could have been committed | fixed in Phase 4; verified with `git check-ignore -v models/smoke/autiz_v2.pt` and `file .gitignore` (UTF-8) |
+| 19 | 4 | The prosody branch D is loaded and checked but no response field uses it | `src/api/pipeline.py` | Serving does not exercise independence; that claim rests on the offline results | open by design; `/about` is the only place independence appears |
+| 20 | 4 | Per-request SHAP is not computed; `explanation.method` is always `proxy` (coefficient x z-score for the baseline) | `src/api/pipeline.py` | Explanation covers the baseline only; the content score has none | open (future work) |
+| 21 | 4 | No file-size or duration limit on uploads | `src/api/routers/` | A very large upload could exhaust disk or time | open |
+| 22 | 4 | `/health` and `/about` detect smoke artifacts from the scaler stamp only (no torch); `/analyze` and `/score` use all three files | `pipeline.smoke_artifacts_flag` | A set where only the checkpoint or joblib is stamped shows `smoke_artifacts: false` on `/health` until the first `/analyze` (which would refuse it anyway) | open; low risk, the notebook stamps all files together |
+| 23 | 4 | The joblib baseline is a pickle, so loading it runs code and needs the same scikit-learn version as training | `src/api/pipeline.py`; `requirements.txt` | Only load files you made; a version mismatch can fail or warn | open; Phase 6 must pin scikit-learn to the Kaggle version. `modal_app.py` has its own package list that lacks scikit-learn and joblib |
+| 24 | 4 | No-speech audio now returns HTTP 422 (before, a placeholder transcript was scored). Input is always converted to 16 kHz mono as in training (before, `.wav` was used as is) | `src/api/pipeline.py` | Behaviour change for the frontends | fixed in Phase 4 by design; the no-speech path is tested (`test_no_speech_is_422_and_temp_wav_is_deleted`); the ffmpeg conversion is patched out in tests, so test it by hand |
+| 25 | 4 | The rehearsal and overlay apps still use the old contract (`mode` as a query parameter, `content_quality_score`, `score_without_system`, `confidence_bound`, `/stream`) | `src/frontend/rehearsal/src/ReportScreen.jsx`; `src/frontend/overlay/src/OverlayCard.jsx` | The rehearsal app will fail against this backend (422 on `mode`) until rebuilt | open (Phase 5) |
+| 26 | 4 | `requirements.txt` and `modal_app.py` still list `silero-vad`, `websockets` and `torchaudio`, now unused | `src/api/requirements.txt`; `src/api/modal_app.py` | Larger image | open (Phase 6) |
+| 27 | 4 | The real Whisper, RoBERTa, openSMILE and ffmpeg path in `pipeline.run` has not been executed; tests use fake encoders | `src/api/pipeline.py` | Possible integration bugs | open; first real run is the hand tests in the Phase 4 report |
 
 ### Assumptions made while writing the v2 notebook (unverified until the Phase 2 run)
 
@@ -192,7 +304,7 @@ Commands below were derived from the repository files; in this session only `npm
 pip install -r requirements.txt
 uvicorn main:app --port 8000
 ```
-It loads large models on the first request. The `/stream` router downloads a speech-detector model when the app starts (removed in Phase 4). Optional: set `CORS_ALLOWED_ORIGINS` to a comma-separated list of origins; the default is `http://localhost:5173,5174,5175`.
+It loads the artifacts and the large models on the first `/analyze` or `/score` request (503 with a clear message until `autiz_v2.pt`, `gemaps_scaler.json` and `prosody_baseline.joblib` exist in `models/checkpoints/`, or in `AUTIZ_MODELS_DIR`). Smoke files are refused unless `ALLOW_SMOKE_ARTIFACTS=1`. Optional: set `CORS_ALLOWED_ORIGINS` to a comma-separated list of origins; the default is `http://localhost:5173,5174,5175`.
 
 **Frontends.** Each of `src/frontend/rehearsal`, `evaluator`, `overlay`:
 ```bash
@@ -205,7 +317,7 @@ They read `VITE_BACKEND_URL` from a `.env` file at the **repository root** (git-
 
 **Modal deploy.** `modal deploy src/api/modal_app.py` (needs a Modal account; will be redone in Phase 6).
 
-**Backend tests.** `pytest` from `src/api/` — currently loads real models and needs network access (fixed in Phase 4).
+**Backend tests.** `pytest` from `src/api/`. They run offline and load no RoBERTa/Whisper; with torch, scikit-learn and joblib installed the artifact tests also run, otherwise they are skipped.
 
 **Training.** `notebooks/autiz_v2.ipynb` is written but has not been run. It is meant to run once, top to bottom, on a Kaggle GPU (Internet on) with the two private datasets attached; its first cells are a preflight and a self-test that stop the run early if anything is wrong. Full reproduction steps will be written in Phase 7.
 

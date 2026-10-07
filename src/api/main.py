@@ -7,9 +7,10 @@ from fastapi import FastAPI
 # CORS middleware lets the browser apps (served from a different origin) call this API
 from fastapi.middleware.cors import CORSMiddleware
 
-# Import our three routers (we will build these next)
-# Each router handles one endpoint
-from routers import analyze, score, stream
+# Routers: /analyze, /score, /about. (/stream was removed in Phase 4; the live overlay is future work.)
+from routers import about, analyze, score
+import pipeline
+from schemas import HealthResponse
 
 # Create the FastAPI app instance — this is our server
 app = FastAPI(
@@ -37,12 +38,11 @@ app.add_middleware(
 )
 
 # Register each router with the app
-# This connects /analyze, /score, and /stream endpoints
 app.include_router(analyze.router)
 app.include_router(score.router)
-app.include_router(stream.router)
+app.include_router(about.router)
 
 # Health check endpoint — confirms server is alive
-@app.get("/health")
+@app.get("/health", response_model=HealthResponse)
 def health_check():
-    return {"status": "ok", "system_stage": "research_pilot"}
+    return {"status": "ok", "system_stage": "research_pilot", "smoke_artifacts": pipeline.smoke_artifacts_flag()}

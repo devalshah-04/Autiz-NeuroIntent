@@ -1,0 +1,45 @@
+{
+  "_comment": "Example of POST /analyze (multipart form: audio=<file>, mode=universal_fairness). Values are illustrative, not from a trained model. This _comment key is not part of the real response. POST /score returns the subset listed in PROJECT_STATUS.md section 6a.",
+  "content_score": 0.63,
+  "content_score_raw": 0.6312,
+  "content_score_source": "trained_head",
+  "content_scorer_stamp": null,
+  "content_label_source": "chalearn",
+  "intent_label": null,
+  "intent_status": "not_trained",
+  "prosody_only_baseline_score": -0.21,
+  "prosody_only_baseline_label": "illustrative comparison model, not an evaluator or vendor tool",
+  "transcript": "I led a small team that moved our reporting from spreadsheets to a shared dashboard, and we cut the monthly close from five days to two.",
+  "acoustic_observations": {
+    "pitch_variation_stddev_norm": 0.21,
+    "mean_unvoiced_segment_sec": 0.18,
+    "voiced_segments_per_sec": 2.9
+  },
+  "delivery_pattern": [
+    "Pitch variation (normalised std dev, unitless): 0.21",
+    "Voiced segments per second: 2.90",
+    "Mean unvoiced segment length: 0.18 s"
+  ],
+  "explanation": {
+    "method": "proxy",
+    "explains": "prosody_only_baseline_score",
+    "top_features": [
+      {"feature": "loudness_sma3_amean", "contribution": -0.41},
+      {"feature": "VoicedSegmentsPerSec", "contribution": 0.12},
+      {"feature": "F0semitoneFrom27.5Hz_sma3nz_stddevNorm", "contribution": -0.1},
+      {"feature": "MeanUnvoicedSegmentLength", "contribution": 0.04},
+      {"feature": "jitterLocal_sma3nz_amean", "contribution": 0.02}
+    ],
+    "note": "Coefficient x z-score of the prosody-only baseline's 62 inputs. For a linear model this equals the linear SHAP value relative to the training mean, but SHAP itself is not computed per request. It explains the baseline only; the content score has no explanation."
+  },
+  "interpretation": "Content score: 63%, computed from the transcript only; the audio is not an input to it. Transcript excerpt: \"I led a small team that moved our reporting from spreadsheets to a shared dashboard, and we...\". The delivery measurements are reported separately and do not change the content score.",
+  "interpretation_source": "template",
+  "mode": "universal_fairness",
+  "mode_effect": "none in this milestone",
+  "session": {
+    "speaker_id": "a1b2c3d4e5f6",
+    "system_stage": "research_pilot",
+    "candidate_disclosure_required": true
+  },
+  "smoke_artifacts": false
+}

@@ -1,344 +1,402 @@
 """
-pipeline.py — NeuroIntent real inference pipeline
+pipeline.py: Autiz v2 serving pipeline.
 
-Drop-in replacement for mock_pipeline.py.
-Interface: run(audio_path: str, mode: str) -> dict
+    audio --ffmpeg--> 16 kHz mono wav --openSMILE--> 62 raw GeMAPS --apply_scaler--> z-scored features
+    audio --Whisper--> transcript --RoBERTa-large--> CLS [1024] --ContentBranch--> C --content_head--> content score
 
-Architecture notes (must match checkpoint exactly):
-  - FusionLayer(hidden_dim=256, num_classes=5)
-  - ContentBranch: Linear(1024→256), LayerNorm, GELU, Linear(256→256)
-  - ProsodyBranch: Linear(62→256),  LayerNorm, GELU, Linear(256→256)
-  - Classifier: Linear(1024→128), GELU, Dropout(0.3), Linear(128→5)
-  - Training used raw CLS embeddings — no content-score scaling in forward pass
-  - GeMAPS: GeMAPSv01b Functionals = 62 features
-  - Intent classes: Confident, Explaining, Enthusiastic, Uncertain, Requesting
+Artifacts (folder AUTIZ_MODELS_DIR): autiz_v2.pt, gemaps_scaler.json, prosody_baseline.joblib.
+They are loaded lazily and once. Files stamped "SMOKE RUN, NOT RESULTS" are refused unless
+ALLOW_SMOKE_ARTIFACTS=1. Model classes and scaler helpers come from autiz_model.py; scaling is never
+reimplemented here (it applies a z-score clip and a std floor). torch is imported lazily so that the
+module imports (and the tests that stub `run`) work without it.
 """
 
+import json
 import os
 import subprocess
 import tempfile
+from pathlib import Path
 
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+
+SMOKE_STAMP = "SMOKE RUN, NOT RESULTS"
+PROXY_STAMP = "PROXY, not a trained scorer"
+BASELINE_LABEL = "illustrative comparison model, not an evaluator or vendor tool"
+
+CHECKPOINT_FILE = "autiz_v2.pt"
+SCALER_FILE = "gemaps_scaler.json"
+BASELINE_FILE = "prosody_baseline.joblib"
+INDEPENDENCE_FILE = "eval_results_independence.json"
+
+PITCH_FEATURE = "F0semitoneFrom27.5Hz_sma3nz_stddevNorm"
+UNVOICED_FEATURE = "MeanUnvoicedSegmentLength"
+VOICED_RATE_FEATURE = "VoicedSegmentsPerSec"
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
-# ── Architecture (verbatim from Cell 5 — must match checkpoint keys) ──────────
+# Errors the routers turn into HTTP responses
 
-class ContentBranch(nn.Module):
-    def __init__(self, input_dim=1024, hidden_dim=256):
-        super().__init__()
-        self.layers = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, hidden_dim),
-        )
-
-    def forward(self, x):
-        return self.layers(x)
+class PipelineError(Exception):
+    status_code = 500
 
 
-class ProsodyBranch(nn.Module):
-    def __init__(self, input_dim=62, hidden_dim=256):
-        super().__init__()
-        self.layers = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, hidden_dim),
-        )
-
-    def forward(self, x):
-        return self.layers(x)
+class ArtifactError(PipelineError):
+    status_code = 503
 
 
-class FusionLayer(nn.Module):
-    def __init__(self, hidden_dim=256, num_classes=5):
-        super().__init__()
-        self.content_branch = ContentBranch(1024, hidden_dim)
-        self.prosody_branch = ProsodyBranch(62, hidden_dim)
-        self.classifier = nn.Sequential(
-            nn.Linear(hidden_dim * 4, 128),
-            nn.GELU(),
-            nn.Dropout(0.3),
-            nn.Linear(128, num_classes),
-        )
-
-    def forward(self, text_embedding, prosody_features):
-        C = self.content_branch(text_embedding)
-        D = self.prosody_branch(prosody_features)
-        combined = torch.cat([C, D, C - D, C * D], dim=-1)
-        return C, D, self.classifier(combined)
+class MissingArtifactError(ArtifactError):
+    pass
 
 
-# ── Constants ──────────────────────────────────────────────────────────────────
-
-INTENT_LABELS = ["Confident", "Explaining", "Enthusiastic", "Uncertain", "Requesting"]
-
-# Typical RoBERTa-large CLS norm range used to normalise the content score display
-_CLS_NORM_REF = 40.0
+class SmokeArtifactError(ArtifactError):
+    pass
 
 
-# ── Checkpoint location ────────────────────────────────────────────────────────
+class AudioDecodeError(PipelineError):
+    status_code = 422
 
-def _find_checkpoint() -> str:
-    # Modal deployment: models dir mounted at /root/models
-    modal_path = "/root/models/checkpoints/fusion_layer_trained_v1.pt"
-    if os.path.exists(modal_path):
+
+class NoSpeechError(PipelineError):
+    status_code = 422
+
+
+# Configuration (read from the environment at call time)
+
+def _resolve_dir(raw: str) -> Path:
+    p = Path(raw)
+    if not p.is_absolute() and not p.exists() and (_REPO_ROOT / p).exists():
+        return _REPO_ROOT / p
+    return p
+
+
+def models_dir() -> Path:
+    raw = os.environ.get("AUTIZ_MODELS_DIR")
+    if raw:
+        return _resolve_dir(raw)
+    modal_path = Path("/root/models/checkpoints")
+    if modal_path.is_dir():
         return modal_path
-    # Local: two levels up from src/api/
-    local_path = os.path.abspath(
-        os.path.join(
-            os.path.dirname(__file__),
-            "..", "..", "models", "checkpoints", "fusion_layer_trained_v1.pt",
+    return _REPO_ROOT / "models" / "checkpoints"
+
+
+def results_dir() -> Path:
+    raw = os.environ.get("AUTIZ_RESULTS_DIR")
+    return _resolve_dir(raw) if raw else _REPO_ROOT / "src" / "eval" / "results"
+
+
+def allow_smoke() -> bool:
+    return os.environ.get("ALLOW_SMOKE_ARTIFACTS") == "1"
+
+
+# Smoke-stamp handling. The notebook writes the stamp as: top-level "run_stamp" in every JSON (including
+# gemaps_scaler.json), config["run_stamp"] in the checkpoint, a "run_stamp" key in the joblib dict, and a
+# "# SMOKE RUN, NOT RESULTS" first line in CSVs (the pipeline loads no CSV). Any non-empty stamp counts.
+
+def _json_stamp(path: Path):
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data.get("run_stamp") if isinstance(data, dict) else None
+
+
+def _enforce_smoke_policy(stamps: dict) -> bool:
+    """Raise if any file is stamped and smoke is not allowed; otherwise return whether the set is smoke."""
+    stamped = sorted(name for name, stamp in stamps.items() if stamp)
+    if stamped and not allow_smoke():
+        raise SmokeArtifactError(
+            f"Refusing to load smoke artifact(s) {stamped} (stamped '{SMOKE_STAMP}'). Their numbers are not results. "
+            "Set ALLOW_SMOKE_ARTIFACTS=1 to load them for testing."
         )
-    )
-    if os.path.exists(local_path):
-        return local_path
-    raise FileNotFoundError(
-        f"Checkpoint not found.\n  Checked: {modal_path}\n  Checked: {local_path}"
-    )
+    return bool(stamped)
 
 
-# ── Audio conversion ───────────────────────────────────────────────────────────
-
-def _to_wav(audio_path: str) -> tuple[str, bool]:
-    """
-    Convert audio to 16kHz mono WAV if it isn't one already.
-    Uses imageio-ffmpeg's bundled binary — no system ffmpeg required.
-    Returns (wav_path, needs_cleanup). Caller must delete if needs_cleanup=True.
-    """
-    if audio_path.lower().endswith(".wav"):
-        return audio_path, False
-
-    import imageio_ffmpeg
-    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-
-    fd, wav_path = tempfile.mkstemp(suffix=".wav")
-    os.close(fd)
-    subprocess.run(
-        [
-            ffmpeg_exe, "-i", audio_path,
-            "-ar", "16000", "-ac", "1",
-            wav_path, "-y", "-loglevel", "error",
-        ],
-        check=True,
-    )
-    return wav_path, True
+def smoke_artifacts_flag() -> bool:
+    """Cheap (no torch) value of the response field smoke_artifacts: True only if allowed AND the set is smoke."""
+    if not allow_smoke():
+        return False
+    if _artifacts is not None:
+        return _artifacts["smoke"]
+    try:
+        return bool(_json_stamp(models_dir() / SCALER_FILE))
+    except (OSError, ValueError):
+        return False
 
 
-# ── Lazy model loading (once per process) ─────────────────────────────────────
+# Artifact loading (lazy, once)
 
-_models = None
+_artifacts = None
+_encoders = None
 
 
-def _load_models() -> dict:
-    global _models
-    if _models is not None:
-        return _models
+def reset_cache():
+    global _artifacts, _encoders
+    _artifacts = None
+    _encoders = None
+
+
+def load_artifacts() -> dict:
+    global _artifacts
+    if _artifacts is not None:
+        return _artifacts
+
+    d = models_dir()
+    paths = {name: d / name for name in (CHECKPOINT_FILE, SCALER_FILE, BASELINE_FILE)}
+    missing = [str(p) for p in paths.values() if not p.is_file()]
+    if missing:
+        raise MissingArtifactError(
+            f"Required model file(s) not found: {missing}. Run notebooks/autiz_v2.ipynb on Kaggle and copy the "
+            "outputs into the models folder (or point AUTIZ_MODELS_DIR at them)."
+        )
+
+    try:
+        stamps = {SCALER_FILE: _json_stamp(paths[SCALER_FILE])}
+        _enforce_smoke_policy(stamps)  # refuse before the heavy imports and loads
+
+        from autiz_model import GEMAPS_DIM, load_autiz_v2, load_scaler
+        import joblib
+
+        modules, config = load_autiz_v2(paths[CHECKPOINT_FILE])
+        stamps[CHECKPOINT_FILE] = config.get("run_stamp")
+        _enforce_smoke_policy(stamps)
+
+        baseline = joblib.load(paths[BASELINE_FILE])
+        if not isinstance(baseline, dict) or "ridge" not in baseline:
+            raise ValueError(f"{BASELINE_FILE} is not the expected dict with a 'ridge' entry")
+        stamps[BASELINE_FILE] = baseline.get("run_stamp")
+        smoke = _enforce_smoke_policy(stamps)
+
+        scaler = load_scaler(paths[SCALER_FILE])
+        if len(scaler["mean"]) != GEMAPS_DIM or list(baseline["feature_names"]) != list(scaler["feature_names"]):
+            raise ValueError("scaler and baseline do not describe the same 62 GeMAPS features")
+    except ArtifactError:
+        raise
+    except (ImportError, KeyError, ValueError, RuntimeError, OSError, EOFError) as e:
+        raise ArtifactError(f"Could not load the model artifacts from {d}: {type(e).__name__}: {e}") from e
+
+    _artifacts = {
+        "modules": modules,
+        "config": config,
+        "scaler": scaler,
+        "baseline": baseline,
+        "smoke": smoke,
+        "proxy_stamp": config.get("content_scorer_stamp"),
+    }
+    print(f"[pipeline] Loaded model artifacts from {d} (smoke={smoke})")
+    return _artifacts
+
+
+def _load_encoders() -> dict:
+    global _encoders
+    if _encoders is not None:
+        return _encoders
 
     import opensmile
+    import torch
     from faster_whisper import WhisperModel
     from transformers import RobertaModel, RobertaTokenizer
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    whisper_compute = "float16" if torch.cuda.is_available() else "int8"
-
-    print("[pipeline] Loading FusionLayer checkpoint...")
-    fusion = FusionLayer(hidden_dim=256, num_classes=5)
-    fusion.load_state_dict(torch.load(_find_checkpoint(), map_location=device))
-    fusion.to(device).eval()
-
-    print("[pipeline] Loading openSMILE (GeMAPSv01b)...")
-    smile = opensmile.Smile(
-        feature_set=opensmile.FeatureSet.GeMAPSv01b,
-        feature_level=opensmile.FeatureLevel.Functionals,
-    )
-
-    print("[pipeline] Loading Whisper base...")
-    whisper = WhisperModel("base", device=device, compute_type=whisper_compute)
-
-    print("[pipeline] Loading RoBERTa-large...")
-    tokenizer = RobertaTokenizer.from_pretrained("roberta-large")
-    roberta = RobertaModel.from_pretrained("roberta-large").eval()
-
-    _models = {
-        "fusion": fusion,
-        "smile": smile,
-        "whisper": whisper,
-        "tokenizer": tokenizer,
-        "roberta": roberta,
+    print("[pipeline] Loading openSMILE (GeMAPSv01b), Whisper base, RoBERTa-large...")
+    _encoders = {
+        "smile": opensmile.Smile(
+            feature_set=opensmile.FeatureSet.GeMAPSv01b,
+            feature_level=opensmile.FeatureLevel.Functionals,
+        ),
+        "whisper": WhisperModel("base", device=device, compute_type="float16" if device == "cuda" else "int8"),
+        "tokenizer": RobertaTokenizer.from_pretrained("roberta-large"),
+        "roberta": RobertaModel.from_pretrained("roberta-large").to(device).eval(),
         "device": device,
     }
-    print("[pipeline] All models ready")
-    return _models
+    return _encoders
 
 
-# ── Inference ──────────────────────────────────────────────────────────────────
+# Audio
+
+def _to_wav(audio_path: str) -> str:
+    """Convert any input to 16 kHz mono wav, exactly as the notebook did for training. Caller deletes the result."""
+    import imageio_ffmpeg
+
+    fd, wav_path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        res = subprocess.run(
+            [imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-i", audio_path, "-ar", "16000", "-ac", "1", wav_path, "-loglevel", "error"],
+            capture_output=True, text=True,
+        )
+    except BaseException:
+        _safe_unlink(wav_path)
+        raise
+    if res.returncode != 0:
+        _safe_unlink(wav_path)
+        raise AudioDecodeError(f"Could not decode the audio file: {res.stderr.strip()[:200]}")
+    return wav_path
+
+
+def _safe_unlink(path: str) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+# Scoring
+
+def score_features(cls_embedding, gemaps_raw, art: dict) -> dict:
+    """Content score from a [1024] CLS embedding; baseline score and explanation from 62 raw GeMAPS values."""
+    import torch
+    from autiz_model import apply_scaler
+
+    z = apply_scaler(gemaps_raw, art["scaler"])  # z-score + clip + std floor, same as training
+    with torch.no_grad():
+        c = art["modules"]["content_branch"](torch.as_tensor(np.asarray(cls_embedding, dtype=np.float32)).reshape(1, -1))
+        raw = float(art["modules"]["content_head"](c).reshape(-1)[0].item())
+
+    ridge = art["baseline"]["ridge"]
+    baseline_score = float(ridge.predict(z.reshape(1, -1))[0])
+    contributions = np.asarray(ridge.coef_, dtype=np.float64).reshape(-1) * z.astype(np.float64)
+    names = art["scaler"]["feature_names"]
+    top = np.argsort(-np.abs(contributions))[:5]
+    return {
+        "content_score_raw": raw,
+        "content_score": min(1.0, max(0.0, raw)),
+        "baseline_score": baseline_score,
+        "top_features": [{"feature": names[i], "contribution": float(contributions[i])} for i in top],
+    }
+
+
+def _observations(feature_names, gemaps_raw) -> dict:
+    by_name = {n: float(v) for n, v in zip(feature_names, gemaps_raw)}
+    return {
+        "pitch_variation_stddev_norm": by_name.get(PITCH_FEATURE),
+        "mean_unvoiced_segment_sec": by_name.get(UNVOICED_FEATURE),
+        "voiced_segments_per_sec": by_name.get(VOICED_RATE_FEATURE),
+    }
+
+
+def _delivery_pattern(obs: dict) -> list:
+    lines = []
+    if obs["pitch_variation_stddev_norm"] is not None:
+        lines.append(f"Pitch variation (normalised std dev, unitless): {obs['pitch_variation_stddev_norm']:.2f}")
+    if obs["voiced_segments_per_sec"] is not None:
+        lines.append(f"Voiced segments per second: {obs['voiced_segments_per_sec']:.2f}")
+    if obs["mean_unvoiced_segment_sec"] is not None:
+        lines.append(f"Mean unvoiced segment length: {obs['mean_unvoiced_segment_sec']:.2f} s")
+    return lines
+
+
+def _interpretation(content_score: float, proxy_stamp, transcript: str) -> str:
+    excerpt = transcript[:80].rstrip() + ("..." if len(transcript) > 80 else "")
+    parts = []
+    if proxy_stamp:
+        parts.append(f"{proxy_stamp}.")
+    parts.append(f"Content score: {content_score:.0%}, computed from the transcript only; the audio is not an input to it.")
+    parts.append(f'Transcript excerpt: "{excerpt}".')
+    parts.append("The delivery measurements are reported separately and do not change the content score.")
+    return " ".join(parts)
+
 
 def run(audio_path: str, mode: str) -> dict:
-    """
-    Full inference pipeline.
+    """Full inference. `mode` is accepted for the API but has no effect in this milestone."""
+    art = load_artifacts()
+    enc = _load_encoders()
+    import torch
 
-    Args:
-        audio_path: path to audio file (WAV or WebM)
-        mode: "universal_fairness" | "speaker_declared"
-
-    Returns:
-        dict matching the NeuroIntent API schema
-    """
-    m = _load_models()
-    device = m["device"]
-
-    # ── Convert to WAV if needed (openSMILE requires WAV) ──
-    wav_path, cleanup = _to_wav(audio_path)
-
+    wav_path = _to_wav(audio_path)
     try:
-        # ── 1. GeMAPS feature extraction (62 features) ──
-        prosody_df = m["smile"].process_file(wav_path)
-        prosody_np = prosody_df.values[0].astype(np.float32)       # [62]
-        feature_names = list(prosody_df.columns)
-        prosody_t = torch.tensor(prosody_np).unsqueeze(0).to(device)  # [1, 62]
+        df = enc["smile"].process_file(wav_path)
+        feature_names = list(df.columns)
+        if feature_names != list(art["scaler"]["feature_names"]):
+            raise PipelineError("openSMILE feature names differ from the scaler's; the artifacts do not match this openSMILE setup")
+        gemaps_raw = df.values[0].astype(np.float64)
 
-        # ── 2. Whisper transcription ──
-        segments, _ = m["whisper"].transcribe(wav_path, beam_size=3)
+        segments, _ = enc["whisper"].transcribe(wav_path, beam_size=3)
         transcript = " ".join(s.text.strip() for s in segments).strip()
-        if not transcript:
-            transcript = "[no speech detected]"
-
     finally:
-        if cleanup:
-            os.unlink(wav_path)
+        _safe_unlink(wav_path)
+    if not transcript:
+        raise NoSpeechError("No speech was detected in the audio, so nothing was scored.")
 
-    # ── 3. RoBERTa CLS embedding ──
-    inputs = m["tokenizer"](
-        transcript, return_tensors="pt", max_length=512, truncation=True
-    )
+    tok = enc["tokenizer"](transcript, return_tensors="pt", max_length=512, truncation=True).to(enc["device"])
     with torch.no_grad():
-        roberta_out = m["roberta"](**inputs)
-        cls_emb = roberta_out.last_hidden_state[:, 0, :]           # [1, 1024]
+        cls = enc["roberta"](**tok).last_hidden_state[:, 0, :].float().cpu().numpy()[0]
 
-    # Content quality score: normalised CLS norm (proxy — real scorer not saved)
-    cls_norm = float(torch.norm(cls_emb).item())
-    content_score = float(min(1.0, cls_norm / _CLS_NORM_REF))
-
-    # ── 4. FusionLayer forward pass ──
-    # Training used raw CLS embeddings (no content-score scaling in Cell 12)
-    cls_input = cls_emb.to(device)
-    with torch.no_grad():
-        C, D, logits = m["fusion"](cls_input, prosody_t)
-        probs = F.softmax(logits, dim=-1).squeeze(0).cpu()
-        cos_cd = F.cosine_similarity(C, D, dim=-1).item()
-
-    intent_idx = int(probs.argmax().item())
-    intent_label = INTENT_LABELS[intent_idx]
-    intent_conf = float(probs[intent_idx].item())
-
-    # ── 5. Audit trail (feature-magnitude proxy — fast, no SHAP blocking) ──
-    C_norm = float(torch.norm(C).item())
-    D_norm = float(torch.norm(D).item())
-    content_share = C_norm / (C_norm + D_norm + 1e-8)
-
-    top5_idx = np.argsort(np.abs(prosody_np))[::-1][:5]
-    top_features = [feature_names[i] for i in top5_idx]
-
-    # ── 6. Prosody observations from actual GeMAPSv01b feature values ──
-    # Index features by name for direct lookup — safer than positional indexing
-    feat = {name: float(val) for name, val in zip(feature_names, prosody_np)}
-
-    # F0semitoneFrom27.5Hz_sma3nz_stddevNorm: normalised pitch std dev.
-    # GeMAPSv01b canonical name; fall back to substring search if version differs.
-    f0_stddev_key = next(
-        (k for k in feat if "F0semitoneFrom27.5Hz" in k and "stddevNorm" in k), None
-    )
-    f0_stddev = feat[f0_stddev_key] if f0_stddev_key else float(np.std(prosody_np))
-    flat_pitch = f0_stddev < 0.5   # below 0.5 semitone std → flat delivery
-
-    # MeanUnvoicedSegmentLength: average silence gap in seconds.
-    mean_pause = feat.get("MeanUnvoicedSegmentLength", 0.0)
-    processing_pause_sec = round(mean_pause, 2) if mean_pause > 0.15 else None
-
-    # VoicedSegmentsPerSec: speaking rate proxy.
-    voiced_per_sec = feat.get("VoicedSegmentsPerSec", None)
-    if voiced_per_sec is not None:
-        if voiced_per_sec > 4.0:
-            rate_label = "Fast speaking pace"
-        elif voiced_per_sec < 2.0:
-            rate_label = "Deliberate, measured pace"
-        else:
-            rate_label = "Steady speaking pace"
-    else:
-        rate_label = "Steady speaking pace"
-
-    # ── 7. Bias-correction gap estimate ──
-    # Simulates what a traditional prosody-penalising system would score
-    prosody_penalty = 0.35 if flat_pitch else 0.12
-    score_without_system = round(max(0.10, content_score * (1.0 - prosody_penalty)), 4)
-
-    # ── 8. Delivery pattern strings — each entry driven by actual feature values ──
-    pitch_label = (
-        f"Low pitch variation (F0 σ = {f0_stddev:.2f} semitones)"
-        if flat_pitch
-        else f"Natural pitch variation (F0 σ = {f0_stddev:.2f} semitones)"
-    )
-    pause_label = (
-        f"Processing pauses detected (mean {processing_pause_sec}s)"
-        if processing_pause_sec
-        else "No significant processing pauses"
-    )
-    delivery_pattern = [pitch_label, rate_label, pause_label]
-
-    # ── 9. Confidence bound ──
-    if intent_conf > 0.70:
-        confidence_bound = "high"
-    elif intent_conf > 0.45:
-        confidence_bound = "medium"
-    else:
-        confidence_bound = "low"
-
-    # ── 10. Interpretation — includes actual score and transcript excerpt ──
-    excerpt = transcript[:55].rstrip()
-    if len(transcript) > 55:
-        excerpt += "..."
-    style_desc = "flat prosody and extended pauses" if flat_pitch else "varied prosody"
-    content_quality = "strong" if content_score > 0.65 else "moderate"
-    interpretation = (
-        f"Content quality score: {content_score:.0%}. "
-        f"Excerpt: \"{excerpt}\". "
-        f"The system detected {style_desc} that traditional scoring may undervalue. "
-        f"Content analysis shows {content_quality} relevance to the question asked."
-    )
-
+    scored = score_features(cls, gemaps_raw, art)
+    obs = _observations(feature_names, gemaps_raw)
+    proxy_stamp = art["proxy_stamp"]
     return {
-        # Core scores
-        "content_quality_score":  round(content_score, 4),
-        "score_without_system":   score_without_system,
-        "score_with_system":      round(content_score, 4),
-        # Intent
-        "intent_label":           intent_label,
-        "intent_confidence":      round(intent_conf, 4),
-        # Frontend display fields
-        "delivery_pattern":       delivery_pattern,
-        "confidence_bound":       confidence_bound,
-        "interpretation":         interpretation,
-        "transcript":             transcript,
-        # Pipeline metadata
-        "prosody_decoupling_applied":    True,
-        "system_stage":                  "research_pilot",
-        "candidate_disclosure_required": True,
-        # Acoustic observations
-        "acoustic_observations": {
-            "flat_pitch_detected":      flat_pitch,
-            "processing_pause_sec":     processing_pause_sec,
-            "content_score_unaffected": True,
+        "content_score": scored["content_score"],
+        "content_score_raw": scored["content_score_raw"],
+        "content_score_source": "proxy" if proxy_stamp else "trained_head",
+        "content_scorer_stamp": proxy_stamp,
+        "content_label_source": art["config"].get("content_label_source"),
+        "intent_label": None,
+        "intent_status": "not_trained",
+        "prosody_only_baseline_score": scored["baseline_score"],
+        "prosody_only_baseline_label": BASELINE_LABEL,
+        "transcript": transcript,
+        "acoustic_observations": obs,
+        "delivery_pattern": _delivery_pattern(obs),
+        "explanation": {
+            "method": "proxy",
+            "explains": "prosody_only_baseline_score",
+            "top_features": scored["top_features"],
+            "note": (
+                "Coefficient x z-score of the prosody-only baseline's 62 inputs. For a linear model this equals the "
+                "linear SHAP value relative to the training mean, but SHAP itself is not computed per request. "
+                "It explains the baseline only; the content score has no explanation."
+            ),
         },
-        # Audit trail
-        "audit_trail": {
-            "top_features":                top_features,
-            "content_attribution_share":   round(content_share, 4),
-            "decoupling_verified":         abs(cos_cd) < 0.20,
-            "cos_sim_C_D":                 round(cos_cd, 4),
-        },
+        "interpretation": _interpretation(scored["content_score"], proxy_stamp, transcript),
+        "interpretation_source": "template",
+        "smoke_artifacts": art["smoke"],
+    }
+
+
+# GET /about
+
+LIMITATIONS = [
+    "Only 8 real speakers, all from YouTube, were used for the real-speaker evaluation; results are anecdotal-scale.",
+    "The content scorer was trained on ChaLearn First Impressions labels, which are human impressions of video, not ratings of answer quality.",
+    "The content score is computed from the transcript only, so it cannot depend on delivery by construction; that invariance is not evidence of training success.",
+    "Independence between the content and delivery representations is tested on held-out LibriSpeech speakers; failing to detect a relationship is not proof of independence.",
+    "No intent model exists; intent_label is always null.",
+    "Transcription uses Whisper base with no fine-tuning, so transcript errors feed into the content score.",
+    "This is a research prototype; it makes no claim about detecting or diagnosing autism or any other condition.",
+]
+CONTENT_LABEL_NOTE = (
+    "The content scorer is trained against the ChaLearn First Impressions V2 'interview' label, a human impression "
+    "of a video clip. It is a weak stand-in for the quality of the words alone."
+)
+
+
+def get_about() -> dict:
+    path = results_dir() / INDEPENDENCE_FILE
+    results, note, label_source, results_smoke = None, None, None, False
+    if not path.is_file():
+        note = f"{INDEPENDENCE_FILE} was not found in {results_dir()}; the training run has not been ingested yet."
+    else:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("top level is not a JSON object")
+        except (OSError, ValueError) as e:
+            note = f"{INDEPENDENCE_FILE} could not be read: {e}"
+        else:
+            stamp = data.get("run_stamp")
+            if stamp and not allow_smoke():
+                note = f"{INDEPENDENCE_FILE} is stamped '{stamp}' and was refused. Set ALLOW_SMOKE_ARTIFACTS=1 to show it."
+            else:
+                results, results_smoke, label_source = data, bool(stamp), data.get("content_label_source")
+    return {
+        "name": "Autiz (NeuroIntent) research prototype",
+        "system_stage": "research_pilot",
+        "stores_nothing": True,
+        "content_label_source": label_source,
+        "content_label_note": CONTENT_LABEL_NOTE,
+        "results_available": results is not None,
+        "independence_results": results,
+        "results_note": note,
+        "limitations": LIMITATIONS,
+        "smoke_artifacts": smoke_artifacts_flag() or results_smoke,
     }

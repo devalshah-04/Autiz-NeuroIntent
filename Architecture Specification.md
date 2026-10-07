@@ -38,10 +38,10 @@ section carries a **Status** line saying what exists. The living, dated record i
 | Classifier head / intent | v1 built but **untrained** (no intent labels exist); dropped in v2; intent is **future work** |
 | RoBERTa content scorer | v2 trains it on ChaLearn First Impressions V2 transcripts (not the 500 annotated clips described in 2.4) |
 | emotion2vec, Llama 3 LoRA | **Planned**; Llama exists only as a hardcoded stub |
-| Evaluator overlay / `/stream` | **Prototype, not connected**; to be disabled in this milestone |
+| Evaluator overlay / `/stream` | **Prototype, not connected**; `/stream` removed from the backend in Phase 4 |
 | Speaker reflection report | Partly built in the rehearsal app, without Llama text |
-| Platform API | `/analyze` and `/score` exist; their response differs from section 3.3 |
-| SHAP audit trail | **Planned**; the current audit trail is a vector-size proxy |
+| Platform API | `/analyze`, `/score`, `/about`, `/health` serve v2 (Phase 4); the response is described in section 3.3 and in `PROJECT_STATUS.md` section 6a |
+| SHAP audit trail | **Planned**; the API returns a labelled `proxy` explanation (coefficient × z-score) for the prosody-only baseline only; SHAP is computed offline in the notebook |
 
 ## v2 design (current milestone)
 
@@ -435,32 +435,35 @@ Asynchronous. Generated after session completion using Llama 3 output.
 
 ### 3.3 Platform API
 
-**Status:** `/analyze` and `/score` exist but return a different schema from the one below; `candidate_disclosure_required` is hardcoded `true` as specified.
+**Status (Phase 4):** serves v2 from `autiz_v2.pt`, `gemaps_scaler.json` and `prosody_baseline.joblib`. The backend stores nothing. The earlier aspirational schema (intent label, "standard evaluator estimated score", bias-correction flag, per-request `decoupling_verified`) is **not served**: those values need intent labels or evaluator data that do not exist, or were invented. `candidate_disclosure_required` stays hardcoded `true`, inside `session`.
 
-REST endpoint. Designed for silent integration into hiring platforms.
+Endpoints: `POST /analyze` and `POST /score` (multipart form: `audio`, `mode`), `GET /about` (model-level independence results, content label source, limitations), `GET /health`. The full field-by-field description is the API contract in `PROJECT_STATUS.md` section 6a; the machine-readable copy is `src/api/schemas.py`, with a real-shaped example in `docs/api_example_response.json`.
 
-**Response schema:**
+**`POST /analyze` response (abridged):**
 ```json
 {
-  "clip_id": "string",
-  "content_score": 0.87,
-  "delivery_pattern": "flat_prosody_extended_pauses",
-  "intent_label": "confident",
-  "confidence_level": "high",
-  "bias_correction_applied": true,
-  "standard_evaluator_estimated_score": 0.52,
-  "corrected_score": 0.87,
-  "audit_trail": {
-    "top_content_features": ["..."],
-    "top_prosody_features": ["..."],
-    "shap_content_attribution_share": 0.71,
-    "decoupling_verified": true,
-    "cos_sim_C_D": 0.14
-  },
-  "communication_style_note": "...",
-  "candidate_disclosure_required": true
+  "content_score": 0.63,
+  "content_score_raw": 0.63,
+  "content_score_source": "trained_head",
+  "content_scorer_stamp": null,
+  "content_label_source": "chalearn",
+  "intent_label": null,
+  "intent_status": "not_trained",
+  "prosody_only_baseline_score": -0.21,
+  "prosody_only_baseline_label": "illustrative comparison model, not an evaluator or vendor tool",
+  "transcript": "...",
+  "acoustic_observations": {"pitch_variation_stddev_norm": 0.21, "mean_unvoiced_segment_sec": 0.18, "voiced_segments_per_sec": 2.9},
+  "explanation": {"method": "proxy", "explains": "prosody_only_baseline_score", "top_features": [{"feature": "...", "contribution": 0.4}], "note": "..."},
+  "interpretation": "...",
+  "interpretation_source": "template",
+  "mode": "universal_fairness",
+  "mode_effect": "none in this milestone",
+  "session": {"speaker_id": "a1b2c3d4e5f6", "system_stage": "research_pilot", "candidate_disclosure_required": true},
+  "smoke_artifacts": false
 }
 ```
+
+`content_score` is clipped to [0, 1]; `content_score_raw` is the unclipped output of the linear scoring layer. The content score is computed from the transcript only, so it cannot depend on delivery by construction (see v2 design). Whether C and D are statistically independent is a **model-level** property reported by `GET /about` from `eval_results_independence.json`, never a per-request claim.
 
 **Requirement:** `candidate_disclosure_required` is hardcoded `true`. Platform integrations must disclose to candidates that ASD-aware interpretation was applied.
 

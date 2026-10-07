@@ -42,3 +42,10 @@ lerna-debug.log*
 *.njsproj
 *.sln
 *.sw?
+
+# Real smoke artifacts from Kaggle (never commit)
+models/smoke/
+
+# Real-speaker transcripts (speech content of real people): never commit
+transcripts_real.csv
+**/transcripts_real.csv

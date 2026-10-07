@@ -31,5 +31,9 @@ opensmile>=2.4.0
 # Numerics
 numpy>=1.24.0
 
+# Prosody-only baseline (prosody_baseline.joblib is a pickled scikit-learn Ridge; pin to the Kaggle version in Phase 6)
+scikit-learn>=1.3
+joblib>=1.3
+
 # FFmpeg — bundled binary, no system package required
 imageio-ffmpeg>=0.4.9
