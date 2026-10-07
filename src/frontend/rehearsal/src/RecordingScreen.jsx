@@ -10,27 +10,18 @@ const QUESTIONS = [
     "Where do you see yourself in 5 years and what are your goals?"
 ]
 
-// The 5 intent label buttons speaker selects after each recording
-const INTENT_LABELS = [
-    'Confident',
-    'Explaining',
-    'Enthusiastic',
-    'Uncertain',
-    'Requesting'
-]
-
-function RecordingScreen({ consentData, onComplete }) {
+function RecordingScreen({ consentData, onComplete, onWithdraw }) {
     // Tracks which question we are on (0 to 4)
     const [questionIndex, setQuestionIndex] = useState(0)
 
     // Tracks recording state — 'idle', 'recording', 'done'
     const [recordingState, setRecordingState] = useState('idle')
 
-    // Stores all completed recordings with their labels
+    // Stores all accepted recordings
     const [recordings, setRecordings] = useState([])
 
-    // Stores the selected intent label for current answer
-    const [selectedLabel, setSelectedLabel] = useState(null)
+    // Why the microphone could not be used, if it could not
+    const [micError, setMicError] = useState(null)
 
     // Stores waveform bar heights for visualization
     const [waveformBars, setWaveformBars] = useState(Array(40).fill(4))
@@ -50,8 +41,39 @@ function RecordingScreen({ consentData, onComplete }) {
     // Holds audio context
     const audioContextRef = useRef(null)
 
+    // Releases the microphone and the waveform loop. Safe to call more than once.
+    const releaseMicrophone = () => {
+        cancelAnimationFrame(animationRef.current)
+        if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+            audioContextRef.current.close()
+        }
+        audioContextRef.current = null
+        analyserRef.current = null
+        const recorder = mediaRecorderRef.current
+        if (recorder) {
+            if (recorder.state !== 'inactive') recorder.stop()
+            recorder.stream.getTracks().forEach(t => t.stop())
+        }
+    }
+
+    // Leaving this screen (including withdrawing consent) must switch the microphone off
+    useEffect(() => {
+        return () => {
+            cancelAnimationFrame(animationRef.current)
+            if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+                audioContextRef.current.close()
+            }
+            const recorder = mediaRecorderRef.current
+            if (recorder) {
+                if (recorder.state !== 'inactive') recorder.stop()
+                recorder.stream.getTracks().forEach(t => t.stop())
+            }
+        }
+    }, [])
+
     // Starts recording from microphone
     const startRecording = async () => {
+        setMicError(null)
         try {
             // Request microphone access from browser
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -78,7 +100,11 @@ function RecordingScreen({ consentData, onComplete }) {
             mediaRecorderRef.current.start()
             setRecordingState('recording')
         } catch (err) {
-            alert('Microphone access denied. Please allow microphone access and try again.')
+            setMicError(
+                err && err.name === 'NotAllowedError'
+                    ? 'Microphone access was denied. Please allow microphone access in your browser and try again.'
+                    : `The microphone could not be used (${err && err.message ? err.message : 'unknown error'}).`
+            )
         }
     }
 
@@ -88,6 +114,7 @@ function RecordingScreen({ consentData, onComplete }) {
         const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount)
 
         const draw = () => {
+            if (!analyserRef.current) return
             analyserRef.current.getByteFrequencyData(dataArray)
             // Map frequency data to bar heights
             const bars = Array.from(dataArray).slice(0, 40).map(val =>
@@ -99,40 +126,29 @@ function RecordingScreen({ consentData, onComplete }) {
         draw()
     }
 
-    // Stops recording and shows label buttons
+    // Stops recording and offers to keep or redo the answer
     const stopRecording = () => {
-        // Stop waveform animation
-        cancelAnimationFrame(animationRef.current)
+        releaseMicrophone()
         setWaveformBars(Array(40).fill(4))
-
-        // Stop audio context
-        if (audioContextRef.current) {
-            audioContextRef.current.close()
-        }
-
-        // Stop MediaRecorder
-        mediaRecorderRef.current.stop()
-
-        // Stop all microphone tracks
-        mediaRecorderRef.current.stream.getTracks().forEach(t => t.stop())
-
         setRecordingState('done')
     }
 
-    // Saves current answer and moves to next question
-    const handleLabelSelect = (label) => {
-        setSelectedLabel(label)
+    // Throws the take away so the answer can be recorded again
+    const handleReRecord = () => {
+        audioChunksRef.current = []
+        setRecordingState('idle')
+    }
 
+    // Keeps the current answer and moves to the next question (or on to processing after the last one)
+    const handleAcceptAnswer = () => {
         // Build audio blob from recorded chunks
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
 
-        // Save recording with its label and question
         const newRecording = {
             questionIndex,
             question: QUESTIONS[questionIndex],
             audioBlob,
-            label,
-            // Send mode to backend based on checkbox B from consent screen
+            // Send mode to backend based on checkbox B from consent screen (both modes run the same pipeline)
             mode: consentData.asdConsent ? 'speaker_declared' : 'universal_fairness'
         }
 
@@ -140,23 +156,16 @@ function RecordingScreen({ consentData, onComplete }) {
         setRecordings(updated)
 
         // If all 5 questions done, move to processing screen
-        if (questionIndex === 4) {
-            setTimeout(() => onComplete(updated), 500)
+        if (questionIndex === QUESTIONS.length - 1) {
+            onComplete(updated)
             return
         }
 
-        // Move to next question
-        setTimeout(() => {
-            setQuestionIndex(prev => prev + 1)
-            setRecordingState('idle')
-            setSelectedLabel(null)
-        }, 500)
+        setQuestionIndex(prev => prev + 1)
+        setRecordingState('idle')
     }
 
-    // Handles delete data button — always visible per design rules
-    const handleDeleteData = () => {
-        alert('Data deletion requested. All session data will be removed.')
-    }
+    const isLastQuestion = questionIndex === QUESTIONS.length - 1
 
     return (
         <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center px-6 py-10">
@@ -173,12 +182,12 @@ function RecordingScreen({ consentData, onComplete }) {
                             research_pilot
                         </span>
                     </div>
-                    {/* Delete my data button — always visible per design rules */}
+                    {/* Withdraw consent — returns to the consent screen */}
                     <button
-                        onClick={handleDeleteData}
-                        className="text-red-400 text-xs hover:text-red-300 transition-colors"
+                        onClick={onWithdraw}
+                        className="text-gray-400 text-xs hover:text-gray-200 transition-colors"
                     >
-                        Delete my data
+                        Withdraw consent
                     </button>
                 </div>
 
@@ -220,6 +229,11 @@ function RecordingScreen({ consentData, onComplete }) {
                     </div>
                 )}
 
+                {/* Microphone problem */}
+                {micError && (
+                    <p className="text-red-400 text-xs mb-4 break-words">{micError}</p>
+                )}
+
                 {/* Record / Stop button */}
                 {recordingState === 'idle' && (
                     <button
@@ -239,28 +253,28 @@ function RecordingScreen({ consentData, onComplete }) {
                     </button>
                 )}
 
-                {/* Intent label buttons — shown immediately after recording stops */}
+                {/* Keep or redo — shown immediately after recording stops */}
                 {recordingState === 'done' && (
-                    <div>
-                        <p className="text-gray-300 text-sm font-medium mb-3">
-                            How did you intend that answer?
-                        </p>
-                        <div className="grid grid-cols-3 gap-2">
-                            {INTENT_LABELS.map((label) => (
-                                <button
-                                    key={label}
-                                    onClick={() => handleLabelSelect(label)}
-                                    className={`py-2 rounded-lg text-sm font-medium transition-colors ${selectedLabel === label
-                                            ? 'bg-indigo-600 text-white'
-                                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                                        }`}
-                                >
-                                    {label}
-                                </button>
-                            ))}
-                        </div>
+                    <div className="space-y-2">
+                        <button
+                            onClick={handleAcceptAnswer}
+                            className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-semibold transition-colors"
+                        >
+                            {isLastQuestion ? 'Use this answer and finish' : 'Use this answer and continue'}
+                        </button>
+                        <button
+                            onClick={handleReRecord}
+                            className="w-full py-2.5 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-xl text-sm font-medium transition-colors"
+                        >
+                            Record this answer again
+                        </button>
                     </div>
                 )}
+
+                {/* Privacy line */}
+                <p className="text-gray-500 text-xs text-center mt-6">
+                    Nothing is stored. Your audio is deleted right after analysis.
+                </p>
 
             </div>
         </div>

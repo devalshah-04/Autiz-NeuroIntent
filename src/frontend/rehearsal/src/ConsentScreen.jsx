@@ -15,11 +15,6 @@ function ConsentScreen({ onProceed }) {
         onProceed({ researchConsent, asdConsent })
     }
 
-    // Handles data withdrawal — will call backend DELETE in later step
-    const handleWithdraw = () => {
-        alert('Your data withdrawal request has been noted. No data has been stored yet.')
-    }
-
     return (
         // Full screen centered layout
         <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center px-6">
@@ -40,8 +35,10 @@ function ConsentScreen({ onProceed }) {
                     Speaker Rehearsal
                 </h1>
                 <p className="text-gray-400 text-sm mb-8">
-                    Practice interview answers and see how your speech is interpreted.
-                    Your privacy is protected throughout.
+                    Practice interview answers and see how your speech is analysed.
+                </p>
+                <p className="text-gray-300 text-sm mb-8 border border-gray-700 rounded-lg px-3 py-2">
+                    Nothing is stored. Your audio is deleted right after analysis.
                 </p>
 
                 {/* Checkbox A — required */}
@@ -62,7 +59,7 @@ function ConsentScreen({ onProceed }) {
                     </div>
                     {/* Label */}
                     <p className="text-gray-300 text-sm leading-relaxed">
-                        I consent to my speech being processed and features stored for research.
+                        I consent to my recorded answers being sent to the analysis server and processed there.
                         <span className="text-red-400 ml-1">*</span>
                     </p>
                 </div>
@@ -85,7 +82,8 @@ function ConsentScreen({ onProceed }) {
                     </div>
                     {/* Label */}
                     <p className="text-gray-300 text-sm leading-relaxed">
-                        I identify as autistic / ASD and consent to ASD-aware personalized interpretation.
+                        I identify as autistic / ASD. This is sent to the server as the "speaker_declared" mode; in this
+                        milestone it does not change the analysis.
                         <span className="text-gray-500 ml-1">(optional)</span>
                     </p>
                 </div>
@@ -106,13 +104,9 @@ function ConsentScreen({ onProceed }) {
                     Begin Rehearsal
                 </button>
 
-                {/* Withdraw anytime button — always visible per design rules */}
-                <button
-                    onClick={handleWithdraw}
-                    className="w-full mt-3 py-3 rounded-xl text-sm text-gray-500 hover:text-gray-300 transition-colors"
-                >
-                    Withdraw anytime
-                </button>
+                <p className="text-gray-500 text-xs text-center mt-3">
+                    You can withdraw consent at any point; that returns you to this screen.
+                </p>
 
             </div>
         </div>

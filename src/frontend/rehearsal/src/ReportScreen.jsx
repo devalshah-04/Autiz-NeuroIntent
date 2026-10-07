@@ -1,19 +1,169 @@
-// Import hooks and axios for delete request
-import { useState } from 'react'
-import axios from 'axios'
-import { analyzeRecording, describeError } from './analyze'
+// Import hooks
+import { useState, useEffect, useRef } from 'react'
+import { analyzeRecording } from './api'
 
-// Read backend URL from environment variable
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
+// True only for real numbers; every optional field below is checked before it is shown.
+const isNum = (v) => typeof v === 'number' && Number.isFinite(v)
+const isText = (v) => typeof v === 'string' && v.length > 0
+const clamp01 = (v) => Math.min(1, Math.max(0, v))
 
-// Confidence bound badge colors
-const CONFIDENCE_COLORS = {
-    low: 'bg-red-900 text-red-300 border-red-700',
-    medium: 'bg-yellow-900 text-yellow-300 border-yellow-700',
-    high: 'bg-green-900 text-green-300 border-green-700'
+// One labelled block inside an answer card
+function Section({ title, children }) {
+    return (
+        <div>
+            <p className="text-gray-300 text-xs font-medium mb-2">{title}</p>
+            {children}
+        </div>
+    )
 }
 
-function ReportScreen({ recordings, results: initialResults, errors: initialErrors = [] }) {
+function SmokeBanner() {
+    return (
+        <div role="alert" className="max-w-2xl mx-auto mb-6 bg-red-900 border-2 border-red-500 text-red-100 rounded-xl px-4 py-3 text-sm font-bold text-center">
+            Smoke-test artifacts, not results
+        </div>
+    )
+}
+
+// Everything the server returned for one answer. Nothing here is invented: a missing field hides its block.
+function ResultBody({ result }) {
+    const baselineShown = isNum(result.prosody_only_baseline_score) && isText(result.prosody_only_baseline_label)
+    const explanation = result.explanation && typeof result.explanation === 'object' ? result.explanation : null
+    const topFeatures = explanation && Array.isArray(explanation.top_features) ? explanation.top_features : []
+    const methodLabel = explanation ? (explanation.method === 'shap' ? 'SHAP' : explanation.method === 'proxy' ? 'proxy' : null) : null
+    const delivery = Array.isArray(result.delivery_pattern) ? result.delivery_pattern : []
+
+    return (
+        <div className="px-5 pb-6 space-y-5 border-t border-gray-700 pt-5">
+
+            {/* Content score */}
+            <Section title="Content score">
+                {result.content_score_source === 'proxy' && (
+                    <p className="text-yellow-300 text-xs font-semibold mb-2">
+                        {isText(result.content_scorer_stamp) ? result.content_scorer_stamp : 'Proxy score, not a trained scorer'}
+                    </p>
+                )}
+                {isNum(result.content_score) ? (
+                    <>
+                        <div className="flex justify-between items-center mb-1.5">
+                            <span className="text-gray-400 text-xs">0 to 1</span>
+                            <span className="text-white text-sm font-bold">{result.content_score.toFixed(2)}</span>
+                        </div>
+                        <div className="w-full bg-gray-700 rounded-full h-2.5">
+                            <div
+                                className="bg-indigo-500 h-2.5 rounded-full transition-all duration-700"
+                                style={{ width: `${clamp01(result.content_score) * 100}%` }}
+                            />
+                        </div>
+                    </>
+                ) : (
+                    <p className="text-gray-400 text-xs">The server did not return a content score.</p>
+                )}
+                <p className="text-gray-400 text-xs mt-2">
+                    This score is computed from the transcript only; your voice and delivery are not an input to it.
+                </p>
+                <details className="mt-2">
+                    <summary className="text-gray-500 text-xs cursor-pointer">Technical details</summary>
+                    <div className="text-gray-400 text-xs mt-1 space-y-1">
+                        {isNum(result.content_score_raw) && (
+                            <p>Unclipped score (content_score_raw): {result.content_score_raw.toFixed(4)}. The score above is this value limited to the range 0 to 1.</p>
+                        )}
+                        {isText(result.content_score_source) && <p>Score source: {result.content_score_source}</p>}
+                        {isText(result.content_label_source) && (
+                            <p>
+                                Trained against: {result.content_label_source}
+                                {result.content_label_source === 'chalearn' && ' (human impressions of video clips, a weak stand-in for the quality of the words alone)'}
+                            </p>
+                        )}
+                    </div>
+                </details>
+            </Section>
+
+            {/* Transcript */}
+            {isText(result.transcript) && (
+                <Section title="Transcript">
+                    <div className="bg-gray-800 rounded-xl p-4 border border-gray-600">
+                        <p className="text-gray-400 text-xs leading-relaxed">{result.transcript}</p>
+                    </div>
+                </Section>
+            )}
+
+            {/* Delivery measurements: plain measured values, no verdicts */}
+            {delivery.length > 0 && (
+                <Section title="Delivery measurements (not used in the content score)">
+                    <div className="space-y-1.5">
+                        {delivery.map((fact, j) => (
+                            <div key={j} className="flex items-start gap-2">
+                                <span className="text-indigo-400 text-xs mt-0.5">•</span>
+                                <p className="text-gray-300 text-xs">{String(fact)}</p>
+                            </div>
+                        ))}
+                    </div>
+                </Section>
+            )}
+
+            {/* Baseline comparison, with the API's own label */}
+            {baselineShown && (
+                <Section title="Baseline comparison">
+                    <p className="text-gray-400 text-xs mb-1">{result.prosody_only_baseline_label}</p>
+                    <p className="text-white text-sm font-bold">{result.prosody_only_baseline_score.toFixed(2)}</p>
+                    <p className="text-gray-500 text-xs mt-1">
+                        This model looks at the voice measurements only. Its number is in standard-deviation units of the
+                        training data, not on the 0 to 1 scale of the content score.
+                    </p>
+                </Section>
+            )}
+
+            {/* Explanation of the baseline, labelled with the method the API reports */}
+            {methodLabel && topFeatures.length > 0 && (
+                <Section title={`What drove the baseline number (method: ${methodLabel})`}>
+                    <div className="space-y-1">
+                        {topFeatures.map((f, j) => (
+                            isText(f && f.feature) && isNum(f.contribution) ? (
+                                <div key={j} className="flex justify-between gap-3 text-xs">
+                                    <span className="text-gray-300 break-all">{f.feature}</span>
+                                    <span className="text-gray-400 font-mono">{f.contribution.toFixed(2)}</span>
+                                </div>
+                            ) : null
+                        ))}
+                    </div>
+                    {isText(explanation.note) && <p className="text-gray-500 text-xs mt-2">{explanation.note}</p>}
+                </Section>
+            )}
+
+            {/* Interpretation text */}
+            {isText(result.interpretation) && (
+                <Section title="Interpretation">
+                    <div className="bg-gray-800 rounded-xl p-4 border border-gray-600">
+                        <p className="text-gray-200 text-sm leading-relaxed">{result.interpretation}</p>
+                    </div>
+                    {result.interpretation_source === 'template' ? (
+                        <p className="text-gray-500 text-xs mt-1">This text is filled in from a template. It is not written by a model.</p>
+                    ) : isText(result.interpretation_source) ? (
+                        <p className="text-gray-500 text-xs mt-1">Source: {result.interpretation_source}</p>
+                    ) : null}
+                </Section>
+            )}
+
+            {/* Intent: no intent model exists */}
+            {result.intent_label === null || result.intent_label === undefined ? (
+                <p className="text-gray-500 text-xs">Intent label: not part of this milestone.</p>
+            ) : (
+                <p className="text-gray-400 text-xs">Intent label: {String(result.intent_label)}</p>
+            )}
+
+            {/* Mode echo */}
+            {isText(result.mode) && (
+                <p className="text-gray-500 text-xs">
+                    Mode sent: {result.mode}.{isText(result.mode_effect) ? ` Effect: ${result.mode_effect}.` : ''}
+                </p>
+            )}
+
+        </div>
+    )
+}
+
+function ReportScreen({ recordings, results: initialResults, errors: initialErrors = [], onWithdraw }) {
     // Tracks which answer card is expanded
     const [expandedIndex, setExpandedIndex] = useState(0)
 
@@ -23,34 +173,32 @@ function ReportScreen({ recordings, results: initialResults, errors: initialErro
     // Indices currently being retried
     const [retrying, setRetrying] = useState([])
 
+    // Cancels retries in flight when this screen is left (for example by withdrawing consent)
+    const abortRef = useRef(null)
+    useEffect(() => {
+        const controller = new AbortController()
+        abortRef.current = controller
+        return () => controller.abort()
+    }, [])
+
     // Re-send one failed answer to the backend
     const retryAnswer = async (i) => {
         setRetrying(prev => [...prev, i])
         try {
-            const data = await analyzeRecording(recordings[i], i)
+            const data = await analyzeRecording(recordings[i], i, { signal: abortRef.current.signal })
             setResults(prev => prev.map((r, j) => (j === i ? data : r)))
             setErrors(prev => prev.map((e, j) => (j === i ? null : e)))
             setExpandedIndex(i)
         } catch (err) {
-            setErrors(prev => {
-                const updated = [...prev]
-                updated[i] = describeError(err)
-                return updated
-            })
+            if (abortRef.current.signal.aborted) return
+            const failure = { userMessage: err.userMessage || err.message || 'Unknown error', detail: err.detail || null }
+            setErrors(prev => prev.map((e, j) => (j === i ? failure : e)))
         } finally {
             setRetrying(prev => prev.filter(j => j !== i))
         }
     }
 
-    // Handles delete data button — sends DELETE to backend
-    const handleDeleteData = async () => {
-        try {
-            await axios.delete(`${BACKEND_URL}/session/anonymous`)
-            alert('All your session data has been deleted successfully.')
-        } catch (err) {
-            alert('Data deletion requested. Your data will be removed shortly.')
-        }
-    }
+    const anySmoke = results.some(r => r && r.smoke_artifacts === true)
 
     return (
         <div className="min-h-screen bg-gray-950 px-6 py-10">
@@ -64,20 +212,25 @@ function ReportScreen({ recordings, results: initialResults, errors: initialErro
                         research_pilot
                     </span>
                 </div>
-                {/* Delete my data button — always visible per design rules */}
+                {/* Withdraw consent — returns to the consent screen */}
                 <button
-                    onClick={handleDeleteData}
-                    className="text-red-400 text-xs hover:text-red-300 transition-colors"
+                    onClick={onWithdraw}
+                    className="text-gray-400 text-xs hover:text-gray-200 transition-colors"
                 >
-                    Delete my data
+                    Withdraw consent
                 </button>
             </div>
+
+            {anySmoke && <SmokeBanner />}
 
             {/* Page title */}
             <div className="max-w-2xl mx-auto mb-6">
                 <h1 className="text-white text-2xl font-bold mb-1">Your Reflection Report</h1>
                 <p className="text-gray-400 text-sm">
-                    Here is how the system interpreted each of your answers.
+                    Here is what the system returned for each of your answers.
+                </p>
+                <p className="text-gray-500 text-xs mt-1">
+                    Nothing is stored. Your audio is deleted right after analysis.
                 </p>
             </div>
 
@@ -87,6 +240,7 @@ function ReportScreen({ recordings, results: initialResults, errors: initialErro
                     const result = results[i]
                     if (!result) {
                         // Analysis failed for this answer — say so instead of showing anything invented
+                        const failure = errors[i]
                         return (
                             <div
                                 key={i}
@@ -99,10 +253,17 @@ function ReportScreen({ recordings, results: initialResults, errors: initialErro
                                 <p className="text-red-400 text-xs">
                                     This answer could not be analysed, so there is no score for it.
                                 </p>
-                                {errors[i] && (
-                                    <p className="text-red-300 text-xs mt-1 break-words">
-                                        Reason: {errors[i]}
-                                    </p>
+                                {failure && (
+                                    <>
+                                        <p className="text-red-300 text-xs mt-1 break-words">
+                                            {failure.userMessage}
+                                        </p>
+                                        {failure.detail && failure.detail !== failure.userMessage && (
+                                            <p className="text-gray-500 text-xs mt-1 break-words">
+                                                Raw detail: {failure.detail}
+                                            </p>
+                                        )}
+                                    </>
                                 )}
                                 <button
                                     onClick={() => retryAnswer(i)}
@@ -138,138 +299,10 @@ function ReportScreen({ recordings, results: initialResults, errors: initialErro
                                 </span>
                             </button>
 
-                            {/* Expanded content */}
-                            {isExpanded && (
-                                <div className="px-5 pb-6 space-y-5 border-t border-gray-700 pt-5">
-
-                                    {/* Content quality score bar */}
-                                    <div>
-                                        <div className="flex justify-between items-center mb-1.5">
-                                            <span className="text-gray-300 text-xs font-medium">
-                                                Content Quality Score
-                                            </span>
-                                            <span className="text-white text-sm font-bold">
-                                                {result.content_quality_score.toFixed(2)}
-                                            </span>
-                                        </div>
-                                        {/* Score bar */}
-                                        <div className="w-full bg-gray-700 rounded-full h-2.5">
-                                            <div
-                                                className="bg-indigo-500 h-2.5 rounded-full transition-all duration-700"
-                                                style={{ width: `${result.content_quality_score * 100}%` }}
-                                            />
-                                        </div>
-                                    </div>
-
-                                    {/* Delivery pattern — 3 acoustic facts */}
-                                    <div>
-                                        <p className="text-gray-300 text-xs font-medium mb-2">
-                                            Delivery Pattern
-                                        </p>
-                                        <div className="space-y-1.5">
-                                            {result.delivery_pattern.map((fact, j) => (
-                                                <div key={j} className="flex items-start gap-2">
-                                                    <span className="text-indigo-400 text-xs mt-0.5">•</span>
-                                                    <p className="text-gray-300 text-xs">{fact}</p>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </div>
-
-                                    {/* Gap visualization — two bars side by side */}
-                                    <div>
-                                        <p className="text-gray-300 text-xs font-medium mb-3">
-                                            System Impact
-                                        </p>
-                                        <div className="grid grid-cols-2 gap-3">
-
-                                            {/* Without system bar */}
-                                            <div>
-                                                <p className="text-gray-500 text-xs mb-1.5">Without system</p>
-                                                <div className="w-full bg-gray-700 rounded-full h-2.5 mb-1">
-                                                    <div
-                                                        className="bg-red-500 h-2.5 rounded-full transition-all duration-700"
-                                                        style={{ width: `${result.score_without_system * 100}%` }}
-                                                    />
-                                                </div>
-                                                <p className="text-red-400 text-sm font-bold">
-                                                    {result.score_without_system.toFixed(2)}
-                                                </p>
-                                            </div>
-
-                                            {/* With system bar */}
-                                            <div>
-                                                <p className="text-gray-500 text-xs mb-1.5">With system</p>
-                                                <div className="w-full bg-gray-700 rounded-full h-2.5 mb-1">
-                                                    <div
-                                                        className="bg-green-500 h-2.5 rounded-full transition-all duration-700"
-                                                        style={{ width: `${result.score_with_system * 100}%` }}
-                                                    />
-                                                </div>
-                                                <p className="text-green-400 text-sm font-bold">
-                                                    {result.score_with_system.toFixed(2)}
-                                                </p>
-                                            </div>
-
-                                        </div>
-                                    </div>
-
-                                    {/* Confidence bound badge — always visible per design rules */}
-                                    <div className="flex items-center gap-2">
-                                        <span className="text-gray-400 text-xs">Confidence:</span>
-                                        <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${CONFIDENCE_COLORS[result.confidence_bound]
-                                            }`}>
-                                            {result.confidence_bound}
-                                        </span>
-                                    </div>
-
-                                    {/* Llama 3 written interpretation */}
-                                    <div>
-                                        <p className="text-gray-300 text-xs font-medium mb-2">
-                                            AI Interpretation
-                                        </p>
-                                        <div className="bg-gray-800 rounded-xl p-4 border border-gray-600">
-                                            <p className="text-gray-200 text-sm leading-relaxed">
-                                                {result.interpretation}
-                                            </p>
-                                        </div>
-                                    </div>
-
-                                    {/* Timestamp-linked transcript */}
-                                    <div>
-                                        <p className="text-gray-300 text-xs font-medium mb-2">
-                                            Transcript
-                                        </p>
-                                        <div className="bg-gray-800 rounded-xl p-4 border border-gray-600">
-                                            <p className="text-gray-400 text-xs leading-relaxed">
-                                                {result.transcript}
-                                            </p>
-                                        </div>
-                                    </div>
-
-                                    {/* Self label that speaker selected */}
-                                    <div className="flex items-center gap-2">
-                                        <span className="text-gray-400 text-xs">Your intended label:</span>
-                                        <span className="bg-gray-700 text-gray-200 text-xs px-2 py-0.5 rounded-full">
-                                            {rec.label}
-                                        </span>
-                                    </div>
-
-                                </div>
-                            )}
+                            {isExpanded && <ResultBody result={result} />}
                         </div>
                     )
                 })}
-            </div>
-
-            {/* Bottom delete button — always visible per design rules */}
-            <div className="max-w-2xl mx-auto mt-8 text-center">
-                <button
-                    onClick={handleDeleteData}
-                    className="text-red-400 text-sm hover:text-red-300 transition-colors border border-red-800 px-6 py-2 rounded-xl"
-                >
-                    Delete all my data
-                </button>
             </div>
 
         </div>

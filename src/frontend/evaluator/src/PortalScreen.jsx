@@ -1,9 +1,5 @@
-// Import hooks and axios
+// Import hooks
 import { useState, useRef } from 'react'
-import axios from 'axios'
-
-// Read backend URL from environment variable
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
 
 // The 5 intent label buttons
 const INTENT_LABELS = [
@@ -64,27 +60,13 @@ function PortalScreen() {
         }
     }
 
-    // Handles submit button — sends label to backend and loads next clip
-    const handleSubmit = async () => {
+    // Handles submit button — loads the next clip. Prototype: the label is not sent anywhere or stored.
+    const handleSubmit = () => {
         if (!selectedLabel) return
-
-        const clip = MOCK_CLIPS[clipIndex]
-
-        try {
-            // POST label to backend
-            await axios.post(`${BACKEND_URL}/score`, {
-                clip_id: clip.id,
-                label: selectedLabel,
-                confidence_score: confidence
-            })
-        } catch (err) {
-            // Continue even if backend not connected yet
-            console.log('Backend not connected — label saved locally')
-        }
 
         const newLabeled = labeled + 1
         setLabeled(newLabeled)
-        setSubmitStatus('Saved!')
+        setSubmitStatus('Not stored (prototype)')
 
         // Check if all clips are done
         if (clipIndex === totalClips - 1) {

@@ -21,10 +21,20 @@ function App() {
     setScreen('processing')
   }
 
-  const handleProcessingComplete = (data, errorMessages = []) => {
+  const handleProcessingComplete = (data, errorList = []) => {
     setResults(data)
-    setErrors(errorMessages)
+    setErrors(errorList)
     setScreen('report')
+  }
+
+  // Withdrawing consent drops everything held in memory and returns to the consent screen.
+  // Leaving a screen unmounts it, which also stops the microphone and cancels requests in flight.
+  const handleWithdraw = () => {
+    setConsentData(null)
+    setRecordings([])
+    setResults([])
+    setErrors([])
+    setScreen('consent')
   }
 
   return (
@@ -36,13 +46,14 @@ function App() {
         <RecordingScreen
           consentData={consentData}
           onComplete={handleRecordingComplete}
+          onWithdraw={handleWithdraw}
         />
       )}
       {screen === 'processing' && (
         <ProcessingScreen
           recordings={recordings}
-          consentData={consentData}
           onComplete={handleProcessingComplete}
+          onWithdraw={handleWithdraw}
         />
       )}
       {screen === 'report' && (
@@ -50,6 +61,7 @@ function App() {
           recordings={recordings}
           results={results}
           errors={errors}
+          onWithdraw={handleWithdraw}
         />
       )}
     </div>

@@ -1,14 +1,14 @@
 // Import hooks for state and side effects
-import { useState, useEffect, useRef } from 'react'
-import { analyzeRecording, describeError } from './analyze'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { analyzeRecording } from './api'
 
-function ProcessingScreen({ recordings, consentData, onComplete }) {
+function ProcessingScreen({ recordings, onComplete, onWithdraw }) {
     // Tracks processing status for each answer — 'waiting', 'processing', 'done', 'error'
     const [statuses, setStatuses] = useState(
         recordings.map(() => 'waiting')
     )
 
-    // Error message for each answer that failed (null if none)
+    // Typed error ({ userMessage, detail }) for each answer that failed (null if none)
     const [errors, setErrors] = useState(
         recordings.map(() => null)
     )
@@ -18,75 +18,72 @@ function ProcessingScreen({ recordings, consentData, onComplete }) {
 
     // Real backend results per answer. A failed answer stays null — it is never replaced by invented data.
     const resultsRef = useRef(recordings.map(() => null))
-    // Latest error message per answer, handed to the report so it can explain failures
+    // Latest error per answer, handed to the report so it can explain failures
     const errorsRef = useRef(recordings.map(() => null))
 
-    // Runs when screen loads — processes each recording one by one
+    // Cancels requests in flight when this screen is left (withdrawing consent, or the report opening)
+    const abortRef = useRef(null)
+
+    // Always call the latest onComplete without re-running the effect below
+    const onCompleteRef = useRef(onComplete)
     useEffect(() => {
-        processRecordings(recordings.map((_, i) => i))
-    }, [])
+        onCompleteRef.current = onComplete
+    }, [onComplete])
 
     // Sends the recordings at the given indices to the backend sequentially
-    const processRecordings = async (indices) => {
+    const processRecordings = useCallback(async (indices, signal) => {
         setNeedsAttention(false)
 
         for (const i of indices) {
+            if (signal.aborted) return
+
             // Mark this answer as currently processing
             errorsRef.current[i] = null
-            setStatuses(prev => {
-                const updated = [...prev]
-                updated[i] = 'processing'
-                return updated
-            })
-            setErrors(prev => {
-                const updated = [...prev]
-                updated[i] = null
-                return updated
-            })
+            setStatuses(prev => prev.map((s, j) => (j === i ? 'processing' : s)))
+            setErrors(prev => prev.map((e, j) => (j === i ? null : e)))
 
             try {
                 // POST this answer to the /analyze endpoint
-                resultsRef.current[i] = await analyzeRecording(recordings[i], i)
-
-                setStatuses(prev => {
-                    const updated = [...prev]
-                    updated[i] = 'done'
-                    return updated
-                })
+                resultsRef.current[i] = await analyzeRecording(recordings[i], i, { signal })
+                setStatuses(prev => prev.map((s, j) => (j === i ? 'done' : s)))
             } catch (err) {
+                if (signal.aborted) return
                 // Surface the failure — no placeholder scores are ever shown
+                const failure = { userMessage: err.userMessage || err.message || 'Unknown error', detail: err.detail || null }
                 resultsRef.current[i] = null
-                errorsRef.current[i] = describeError(err)
-                setStatuses(prev => {
-                    const updated = [...prev]
-                    updated[i] = 'error'
-                    return updated
-                })
-                setErrors(prev => {
-                    const updated = [...prev]
-                    updated[i] = describeError(err)
-                    return updated
-                })
+                errorsRef.current[i] = failure
+                setStatuses(prev => prev.map((s, j) => (j === i ? 'error' : s)))
+                setErrors(prev => prev.map((e, j) => (j === i ? failure : e)))
             }
-
-            // Small delay between requests to avoid overwhelming backend
-            await new Promise(resolve => setTimeout(resolve, 1000))
         }
 
+        if (signal.aborted) return
         if (resultsRef.current.every(r => r !== null)) {
             // All answers analysed — move to reflection report screen
-            setTimeout(() => onComplete([...resultsRef.current], [...errorsRef.current]), 800)
+            onCompleteRef.current([...resultsRef.current], [...errorsRef.current])
         } else {
             setNeedsAttention(true)
         }
-    }
+    }, [recordings])
+
+    // Runs when the screen loads — processes each recording one by one
+    useEffect(() => {
+        const controller = new AbortController()
+        abortRef.current = controller
+        // Started from a timer so state is only set from a callback; leaving the screen cancels it
+        const timer = setTimeout(() => processRecordings(recordings.map((_, i) => i), controller.signal), 0)
+        return () => {
+            clearTimeout(timer)
+            controller.abort()
+        }
+    }, [recordings, processRecordings])
 
     // Re-send only the answers that failed
     const retryFailed = () => {
         const failed = resultsRef.current
             .map((r, i) => (r === null ? i : -1))
             .filter(i => i >= 0)
-        processRecordings(failed)
+        processRecordings(failed, abortRef.current.signal)
     }
 
     // Status icon for each answer row
@@ -115,19 +112,28 @@ function ProcessingScreen({ recordings, consentData, onComplete }) {
             <div className="w-full max-w-lg bg-gray-900 border border-gray-700 rounded-2xl p-8 shadow-2xl">
 
                 {/* Header */}
-                <div className="flex items-center gap-3 mb-6">
-                    <span className="text-white font-bold">NeuroIntent</span>
-                    {/* research_pilot badge — always visible */}
-                    <span className="bg-indigo-700 text-indigo-100 text-xs px-2 py-0.5 rounded-full">
-                        research_pilot
-                    </span>
+                <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center gap-3">
+                        <span className="text-white font-bold">NeuroIntent</span>
+                        {/* research_pilot badge — always visible */}
+                        <span className="bg-indigo-700 text-indigo-100 text-xs px-2 py-0.5 rounded-full">
+                            research_pilot
+                        </span>
+                    </div>
+                    <button
+                        onClick={onWithdraw}
+                        className="text-gray-400 text-xs hover:text-gray-200 transition-colors"
+                    >
+                        Withdraw consent
+                    </button>
                 </div>
 
                 <h2 className="text-white text-xl font-semibold mb-2">
                     Analysing your answers
                 </h2>
                 <p className="text-gray-400 text-sm mb-6">
-                    Estimated 15–30 seconds per answer. Please keep this tab open.
+                    The first answer can take a minute or more while the server loads its models; later answers are
+                    faster. Please keep this tab open.
                 </p>
 
                 {/* Overall progress bar */}
@@ -178,9 +184,16 @@ function ProcessingScreen({ recordings, consentData, onComplete }) {
 
                             {/* Why this answer failed */}
                             {statuses[i] === 'error' && errors[i] && (
-                                <p className="text-red-400 text-xs mt-2 break-words">
-                                    {errors[i]}
-                                </p>
+                                <div className="mt-2">
+                                    <p className="text-red-400 text-xs break-words">
+                                        {errors[i].userMessage}
+                                    </p>
+                                    {errors[i].detail && errors[i].detail !== errors[i].userMessage && (
+                                        <p className="text-gray-500 text-xs mt-1 break-words">
+                                            Raw detail: {errors[i].detail}
+                                        </p>
+                                    )}
+                                </div>
                             )}
                         </div>
                     ))}
@@ -212,8 +225,8 @@ function ProcessingScreen({ recordings, consentData, onComplete }) {
                 )}
 
                 {/* Footer note */}
-                <p className="text-gray-600 text-xs text-center mt-6">
-                    Your data is processed securely and never shared without consent.
+                <p className="text-gray-500 text-xs text-center mt-6">
+                    Nothing is stored. Your audio is deleted right after analysis.
                 </p>
 
             </div>

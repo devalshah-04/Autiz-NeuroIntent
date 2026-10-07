@@ -10,6 +10,7 @@ __pycache__/
 # Environment files
 .env
 .env.*
+!.env.example
 
 # Mac junk
 .DS_Store
